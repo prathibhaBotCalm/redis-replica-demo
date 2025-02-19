@@ -15,6 +15,8 @@ jobs:
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     name: Deploy to Staging Environment
+    env:
+      PORT: 3000
     steps:
       - name: Verify Staging Secrets
         run: |
@@ -28,7 +30,6 @@ jobs:
           STAGING_HOST: ${{ secrets.STAGING_HOST }}
           STAGING_USER: ${{ secrets.STAGING_USER }}
           STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
-          PORT: 3000
       - name: Checkout Repository
         uses: actions/checkout@v4
       - name: Set repository name lower-case
