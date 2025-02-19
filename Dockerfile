@@ -69,9 +69,8 @@ RUN apk add --no-cache git python3 make g++
 WORKDIR /app
 COPY . /app
 
-RUN npm i -g pnpm@9.0.4
-RUN pnpm i
-RUN pnpm build
+RUN yarn i
+RUN yarn build
 
 EXPOSE 3000
-CMD ["pnpm", "start"]
+CMD ["yarn", "start"]
