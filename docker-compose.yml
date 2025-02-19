@@ -1,0 +1,142 @@
+networks:
+  redis-network:
+    driver: bridge
+services:
+  nextjs-app:
+    build:
+      context: .
+      target: production # Default to production build
+    ports:
+      - '${APP_PORT}:${APP_PORT}'
+    environment:
+      - NODE_ENV=${NODE_ENV}
+      - REDIS_SENTINELS=sentinel-1:${SENTINEL_1_PORT},sentinel-2:${SENTINEL_2_PORT},sentinel-3:${SENTINEL_3_PORT}
+      - REDIS_MASTER_NAME=${REDIS_MASTER_NAME}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    networks:
+      - redis-network
+    restart: unless-stopped
+
+  redis-master:
+    image: redis/redis-stack:latest
+    command: ['/scripts/init-master.sh']
+    ports:
+      - '${REDIS_MASTER_PORT}:6379'
+    networks:
+      - redis-network
+    volumes:
+      - redis-data:/data
+      - ./backup:/backup # Mount the backup directory
+      - ./scripts/init-master.sh:/scripts/init-master.sh:ro
+    healthcheck:
+      test:
+        ['CMD', 'bash', '-c', 'redis-cli -a ${REDIS_PASSWORD} ping | grep PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+    profiles:
+      - production
+
+  redis-slave-1:
+    image: redis/redis-stack:latest
+    command: ['/scripts/init-slave.sh']
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    ports:
+      - '${REDIS_SLAVE_1_PORT}:6379'
+    networks:
+      - redis-network
+    volumes:
+      - ./scripts/init-slave.sh:/scripts/init-slave.sh:ro
+    environment:
+      - REDIS_MASTER_HOST=redis-master
+      - REDIS_MASTER_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    restart: always
+    profiles:
+      - production
+
+  redis-slave-2:
+    image: redis/redis-stack:latest
+    command: ['/scripts/init-slave.sh']
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    ports:
+      - '${REDIS_SLAVE_2_PORT}:6379'
+    networks:
+      - redis-network
+    volumes:
+      - ./scripts/init-slave.sh:/scripts/init-slave.sh:ro
+    environment:
+      - REDIS_MASTER_HOST=redis-master
+      - REDIS_MASTER_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    restart: always
+    profiles:
+      - production
+
+  sentinel-1:
+    image: bitnami/redis-sentinel:latest
+    environment:
+      - REDIS_MASTER_NAME=${REDIS_MASTER_NAME}
+      - REDIS_MASTER_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_MASTER_HOST=redis-master
+      - REDIS_SENTINEL_QUORUM=${REDIS_SENTINEL_QUORUM}
+      - REDIS_SENTINEL_PASSWORD=${REDIS_PASSWORD}
+    ports:
+      - '${SENTINEL_1_PORT}:26379'
+    networks:
+      - redis-network
+    restart: always
+    profiles:
+      - production
+
+  sentinel-2:
+    image: bitnami/redis-sentinel:latest
+    environment:
+      - REDIS_MASTER_NAME=${REDIS_MASTER_NAME}
+      - REDIS_MASTER_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_MASTER_HOST=redis-master
+      - REDIS_SENTINEL_QUORUM=${REDIS_SENTINEL_QUORUM}
+      - REDIS_SENTINEL_PASSWORD=${REDIS_PASSWORD}
+    ports:
+      - '${SENTINEL_2_PORT}:26379'
+    networks:
+      - redis-network
+    restart: always
+    profiles:
+      - production
+
+  sentinel-3:
+    image: bitnami/redis-sentinel:latest
+    environment:
+      - REDIS_MASTER_NAME=${REDIS_MASTER_NAME}
+      - REDIS_MASTER_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_MASTER_HOST=redis-master
+      - REDIS_SENTINEL_QUORUM=${REDIS_SENTINEL_QUORUM}
+      - REDIS_SENTINEL_PASSWORD=${REDIS_PASSWORD}
+    ports:
+      - '${SENTINEL_3_PORT}:26379'
+    networks:
+      - redis-network
+    restart: always
+    profiles:
+      - production
+
+  redis-backup:
+    image: alpine
+    volumes:
+      - redis-data:/data
+      - ./backup:/backup
+      - ./scripts/backup.sh:/scripts/backup.sh:ro # Mount the script inside the container
+    networks:
+      - redis-network
+    entrypoint: ['/bin/sh', '/scripts/backup.sh']
+    profiles:
+      - production
+
+volumes:
+  redis-data:

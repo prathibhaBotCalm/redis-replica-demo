@@ -1,0 +1,29 @@
+
+services:
+  nextjs-app:
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: "512M"
+
+  redis-master:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "256M"
+
+  redis-slave-1:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "256M"
+
+  redis-slave-2:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "256M"
