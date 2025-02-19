@@ -67,7 +67,7 @@ jobs:
               cd redis-replica-demo
               git pull origin dev
             else
-              git clone -b dev https://github.com/prathibhaBotCalm/redis-replica-demo.git
+              git clone -b dev git@github.com:prathibhaBotCalm/redis-replica-demo.git
               cd redis-replica-demo
             fi
 
@@ -83,7 +83,7 @@ jobs:
 
             echo "Deploying full stack via docker-compose..."
             docker-compose pull
-            docker-compose up -d
+            docker-compose up --build -d
 
             echo "Staging deployment completed."
 
