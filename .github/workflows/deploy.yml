@@ -155,7 +155,7 @@ jobs:
               cd redis-replica-demo
               git pull origin main
             else
-              git clone git@github.com:prathibhaBotCalm/redis-replica-demo.git
+              git clone -b dev git@github.com:prathibhabotcalm/redis-replica-demo.git
               cd redis-replica-demo
             fi
 
