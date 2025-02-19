@@ -1,10 +1,11 @@
 name: CI/CD Pipeline
-'on':
+on:
   push:
     branches:
       - main
       - dev
   workflow_dispatch: {}
+
 jobs:
   deploy-staging:
     if: github.ref == 'refs/heads/dev'
@@ -20,59 +21,57 @@ jobs:
             fi
           done
         env:
-          STAGING_HOST: '${{ secrets.STAGING_HOST }}'
-          STAGING_USER: '${{ secrets.STAGING_USER }}'
-          STAGING_SSH_KEY: '${{ secrets.STAGING_SSH_KEY }}'
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
       - name: Checkout Repository
         uses: actions/checkout@v4
+      - name: Set repository name lower-case
+        id: repo
+        run: |
+          repo=$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
+          echo "repo=${repo}" >> $GITHUB_OUTPUT
       - name: Log in to GHCR (Staging)
         uses: docker/login-action@v3.3.0
         with:
           registry: ghcr.io
-          username: '${{ github.actor }}'
-          password: '${{ secrets.GITHUB_TOKEN }}'
-
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
         with:
           buildkitd-flags: --debug
-
       - name: Build and Push Docker Image (Staging)
         id: build-staging
         uses: docker/build-push-action@v6.5.0
         with:
           context: .
           push: true
-          tags: 'ghcr.io/${{ toLower(github.repository) }}:staging-latest'
+          tags: "ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest"
           cache-from: type=gha
-          cache-to: 'type=gha,mode=max'
+          cache-to: "type=gha,mode=max"
       - name: Deploy to Staging Droplet
         uses: appleboy/ssh-action@master
         with:
-          host: '${{ secrets.STAGING_HOST }}'
-          username: '${{ secrets.STAGING_USER }}'
-          key: '${{ secrets.STAGING_SSH_KEY }}'
-          script: >
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
             set -e
 
             echo "Logging into GHCR..."
-
-            docker login ghcr.io -u "${{ github.actor }}" -p "${{
-            secrets.GITHUB_TOKEN }}"
+            docker login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
 
             echo "Pulling latest staging image..."
-
-            docker pull ghcr.io/${{ toLower(github.repository) }}:staging-latest
+            docker pull ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest
 
             echo "Deploying full stack via docker-compose..."
-
-            cp .env .env
-
+            cp .env.staging .env
             docker-compose pull
-
             docker-compose up -d
 
             echo "Staging deployment completed."
+
   deploy-live:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -81,77 +80,65 @@ jobs:
       NODE_ENV: production
     steps:
       - name: Verify Live Secrets
-        run: >
-          for secret in LIVE_HOST LIVE_USER LIVE_SSH_KEY APP_PORT
-          REDIS_MASTER_PORT REDIS_SLAVE_1_PORT REDIS_SLAVE_2_PORT
-          SENTINEL_1_PORT SENTINEL_2_PORT SENTINEL_3_PORT REDIS_PASSWORD
-          REDIS_MASTER_NAME REDIS_SENTINEL_QUORUM; do
+        run: |
+          for secret in LIVE_HOST LIVE_USER LIVE_SSH_KEY APP_PORT REDIS_MASTER_PORT REDIS_SLAVE_1_PORT REDIS_SLAVE_2_PORT SENTINEL_1_PORT SENTINEL_2_PORT SENTINEL_3_PORT REDIS_PASSWORD REDIS_MASTER_NAME REDIS_SENTINEL_QUORUM; do
             if [ -z "${!secret}" ]; then
               echo "::error::Secret $secret is not set"
               exit 1
             fi
           done
         env:
-          LIVE_HOST: '${{ secrets.LIVE_HOST }}'
-          LIVE_USER: '${{ secrets.LIVE_USER }}'
-          LIVE_SSH_KEY: '${{ secrets.LIVE_SSH_KEY }}'
-          APP_PORT: '${{ secrets.APP_PORT }}'
-          REDIS_MASTER_PORT: '${{ secrets.REDIS_MASTER_PORT }}'
-          REDIS_SLAVE_1_PORT: '${{ secrets.REDIS_SLAVE_1_PORT }}'
-          REDIS_SLAVE_2_PORT: '${{ secrets.REDIS_SLAVE_2_PORT }}'
-          SENTINEL_1_PORT: '${{ secrets.SENTINEL_1_PORT }}'
-          SENTINEL_2_PORT: '${{ secrets.SENTINEL_2_PORT }}'
-          SENTINEL_3_PORT: '${{ secrets.SENTINEL_3_PORT }}'
-          REDIS_PASSWORD: '${{ secrets.REDIS_PASSWORD }}'
-          REDIS_MASTER_NAME: '${{ secrets.REDIS_MASTER_NAME }}'
-          REDIS_SENTINEL_QUORUM: '${{ secrets.REDIS_SENTINEL_QUORUM }}'
+          LIVE_HOST: ${{ secrets.LIVE_HOST }}
+          LIVE_USER: ${{ secrets.LIVE_USER }}
+          LIVE_SSH_KEY: ${{ secrets.LIVE_SSH_KEY }}
+          APP_PORT: ${{ secrets.APP_PORT }}
+          REDIS_MASTER_PORT: ${{ secrets.REDIS_MASTER_PORT }}
+          REDIS_SLAVE_1_PORT: ${{ secrets.REDIS_SLAVE_1_PORT }}
+          REDIS_SLAVE_2_PORT: ${{ secrets.REDIS_SLAVE_2_PORT }}
+          SENTINEL_1_PORT: ${{ secrets.SENTINEL_1_PORT }}
+          SENTINEL_2_PORT: ${{ secrets.SENTINEL_2_PORT }}
+          SENTINEL_3_PORT: ${{ secrets.SENTINEL_3_PORT }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          REDIS_MASTER_NAME: ${{ secrets.REDIS_MASTER_NAME }}
+          REDIS_SENTINEL_QUORUM: ${{ secrets.REDIS_SENTINEL_QUORUM }}
       - name: Checkout Repository
         uses: actions/checkout@v4
+      - name: Set repository name lower-case
+        id: repo
+        run: |
+          repo=$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
+          echo "repo=${repo}" >> $GITHUB_OUTPUT
       - name: Log in to GHCR (Live)
         uses: docker/login-action@v3.3.0
         with:
           registry: ghcr.io
-          username: '${{ github.actor }}'
-          password: '${{ secrets.GITHUB_TOKEN }}'
-      
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-        with:
-          buildkitd-flags: --debug
-
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and Push Docker Image (Live)
         id: build-live
         uses: docker/build-push-action@v6.5.0
         with:
           context: .
           push: true
-          tags: "ghcr.io/${{ toLower(github.repository) }}:live-latest"
+          tags: "ghcr.io/${{ steps.repo.outputs.repo }}:live-latest"
           cache-from: type=gha
-          cache-to: 'type=gha,mode=max'
+          cache-to: "type=gha,mode=max"
       - name: Deploy to Live Droplet (Blue/Green)
         uses: appleboy/ssh-action@master
         with:
-          host: '${{ secrets.LIVE_HOST }}'
-          username: '${{ secrets.LIVE_USER }}'
-          key: '${{ secrets.LIVE_SSH_KEY }}'
-          script: >
+          host: ${{ secrets.LIVE_HOST }}
+          username: ${{ secrets.LIVE_USER }}
+          key: ${{ secrets.LIVE_SSH_KEY }}
+          script: |
             set -euo pipefail
 
-
             echo "Logging into GHCR..."
-
-            docker login ghcr.io -u "${{ github.actor }}" -p "${{
-            secrets.GITHUB_TOKEN }}"
-
+            docker login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
 
             echo "Pulling latest live image..."
+            docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
 
-            docker pull ghcr.io/${{ toLower(github.repository) }}:live-latest
-
-
-            # Conditionally bring up Redis services only if NODE_ENV is
-            production.
-
+            # Conditionally bring up Redis services only if NODE_ENV is production.
             if [ "$NODE_ENV" = "production" ]; then
               export COMPOSE_PROFILES=production
               echo "Production mode: Bringing up Redis services"
@@ -161,19 +148,13 @@ jobs:
               echo "Non-production mode: Skipping Redis services setup"
             fi
 
-
             echo "Determining active Next.js container color..."
-
             active_color=""
-
-            if docker ps --filter "name=nextjs-app-blue" --format '{{.Names}}' |
-            grep -q "nextjs-app-blue"; then
+            if docker ps --filter "name=nextjs-app-blue" --format '{{.Names}}' | grep -q "nextjs-app-blue"; then
               active_color="blue"
-            elif docker ps --filter "name=nextjs-app-green" --format
-            '{{.Names}}' | grep -q "nextjs-app-green"; then
+            elif docker ps --filter "name=nextjs-app-green" --format '{{.Names}}' | grep -q "nextjs-app-green"; then
               active_color="green"
             fi
-
 
             if [ "$active_color" = "blue" ]; then
               new_color="green"
@@ -186,90 +167,71 @@ jobs:
               new_host_port=3001
             fi
 
-
             new_container="nextjs-app-${new_color}"
-
-            echo "Deploying new container: ${new_container} on host port
-            ${new_host_port}"
-
+            echo "Deploying new container: ${new_container} on host port ${new_host_port}"
 
             echo "Generating live environment file..."
-
             cat <<-'EOF' > .env
+              NODE_ENV=production
+              APP_PORT=${{ secrets.APP_PORT }}
+              REDIS_MASTER_PORT=${{ secrets.REDIS_MASTER_PORT }}
+              REDIS_SLAVE_1_PORT=${{ secrets.REDIS_SLAVE_1_PORT }}
+              REDIS_SLAVE_2_PORT=${{ secrets.REDIS_SLAVE_2_PORT }}
+              SENTINEL_1_PORT=${{ secrets.SENTINEL_1_PORT }}
+              SENTINEL_2_PORT=${{ secrets.SENTINEL_2_PORT }}
+              SENTINEL_3_PORT=${{ secrets.SENTINEL_3_PORT }}
+              REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
+              REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}
+              REDIS_SENTINEL_QUORUM=${{ secrets.REDIS_SENTINEL_QUORUM }}
+              EOF
 
-            NODE_ENV=production
+                          echo "Starting new Next.js container..."
+                          docker run -d -p ${new_host_port}:${{ secrets.APP_PORT }} --name ${new_container} --restart always \
+                            --env NODE_ENV=production \
+                            --env APP_PORT=${{ secrets.APP_PORT }} \
+                            --env REDIS_SENTINELS="sentinel-1:${{ secrets.SENTINEL_1_PORT }},sentinel-2:${{ secrets.SENTINEL_2_PORT }},sentinel-3:${{ secrets.SENTINEL_3_PORT }}" \
+                            --env REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }} \
+                            --env REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }} \
+                            ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
 
-            APP_PORT=${{ secrets.APP_PORT }}
+                          echo "Waiting for new container health..."
+                          for i in {1..10}; do
+                            if curl -s -f http://127.0.0.1:${new_host_port} > /dev/null; then
+                              echo "New container is healthy."
+                              break
+                            else
+                              echo "Health check attempt $i failed. Retrying in 5 seconds..."
+                              sleep 5
+                            fi
+                          done
 
-            REDIS_MASTER_PORT=${{ secrets.REDIS_MASTER_PORT }}
+                          echo "Updating reverse proxy..."
+                          cat <<-'EOF' > /etc/nginx/conf.d/nextjs-app.conf
+              upstream nextjs_app {
+                  server 127.0.0.1:${new_host_port};
+              }
 
-            REDIS_SLAVE_1_PORT=${{ secrets.REDIS_SLAVE_1_PORT }}
+              server {
+                  listen 80;
+                  location / {
+                      proxy_pass http://nextjs_app;
+                      proxy_set_header Host \$host;
+                      proxy_set_header X-Real-IP \$remote_addr;
+                      proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                  }
+              }
+              EOF
 
-            REDIS_SLAVE_2_PORT=${{ secrets.REDIS_SLAVE_2_PORT }}
+                          echo "Reloading Nginx..."
+                          nginx -s reload
 
-            SENTINEL_1_PORT=${{ secrets.SENTINEL_1_PORT }}
-
-            SENTINEL_2_PORT=${{ secrets.SENTINEL_2_PORT }}
-
-            SENTINEL_3_PORT=${{ secrets.SENTINEL_3_PORT }}
-
-            REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
-
-            REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}
-
-            REDIS_SENTINEL_QUORUM=${{ secrets.REDIS_SENTINEL_QUORUM }}
-
-            EOF
-
-                        echo "Starting new Next.js container..."
-                        docker run -d -p ${new_host_port}:${{ secrets.APP_PORT }} --name ${new_container} --restart always \
-                          --env NODE_ENV=production \
-                          --env APP_PORT=${{ secrets.APP_PORT }} \
-                          --env REDIS_SENTINELS="sentinel-1:${{ secrets.SENTINEL_1_PORT }},sentinel-2:${{ secrets.SENTINEL_2_PORT }},sentinel-3:${{ secrets.SENTINEL_3_PORT }}" \
-                          --env REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }} \
-                          --env REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }} \
-                          ghcr.io/${{ toLower(github.repository) }}:live-latest
-
-                        echo "Waiting for new container health..."
-                        for i in {1..10}; do
-                          if curl -s -f http://127.0.0.1:${new_host_port} > /dev/null; then
-                            echo "New container is healthy."
-                            break
-                          else
-                            echo "Health check attempt $i failed. Retrying in 5 seconds..."
-                            sleep 5
+                          if [ -n "$active_color" ]; then
+                            old_container="nextjs-app-${active_color}"
+                            echo "Removing old container: ${old_container}"
+                            docker rm -f ${old_container} || true
                           fi
-                        done
 
-                        echo "Updating reverse proxy..."
-                        cat <<-'EOF' > /etc/nginx/conf.d/nextjs-app.conf
-            upstream nextjs_app {
-                server 127.0.0.1:${new_host_port};
-            }
+                          echo "Pruning dangling images..."
+                          docker image prune -f
 
-
-            server {
-                listen 80;
-                location / {
-                    proxy_pass http://nextjs_app;
-                    proxy_set_header Host \$host;
-                    proxy_set_header X-Real-IP \$remote_addr;
-                    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-                }
-            }
-
-            EOF
-
-                        echo "Reloading Nginx..."
-                        nginx -s reload
-
-                        if [ -n "$active_color" ]; then
-                          old_container="nextjs-app-${active_color}"
-                          echo "Removing old container: ${old_container}"
-                          docker rm -f ${old_container} || true
-                        fi
-
-                        echo "Pruning dangling images..."
-                        docker image prune -f
-
-                        echo "Live blue/green deployment completed successfully."
+                          echo "Live blue/green deployment completed successfully."
