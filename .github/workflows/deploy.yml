@@ -67,7 +67,7 @@ jobs:
             echo "Pulling latest staging image..."
             docker pull ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest
             echo "Deploying full stack via docker-compose..."
-            cp .env .env
+            cp .env.staging .env
             docker-compose pull
             docker-compose up -d
             echo "Staging deployment completed."
