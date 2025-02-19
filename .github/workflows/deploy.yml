@@ -64,12 +64,18 @@ jobs:
             set -e
             echo "Logging into GHCR..."
             docker login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
+
             echo "Pulling latest staging image..."
             docker pull ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest
+
+            echo "Writing staging environment file..."
+            # We write the multiline secret to `.env` on the remote server
+            echo "${{ secrets.STAGING_DOT_ENV }}" > .env
+
             echo "Deploying full stack via docker-compose..."
-            cp .env.staging .env
             docker-compose pull
             docker-compose up -d
+
             echo "Staging deployment completed."
 
   deploy-live:
