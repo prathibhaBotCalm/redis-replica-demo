@@ -62,6 +62,15 @@ jobs:
           key: ${{ secrets.STAGING_SSH_KEY }}
           script: |
             set -e
+            echo "Cloning or updating repository on remote server..."
+            if [ -d redis-replica-demo ]; then
+              cd redis-replica-demo
+              git pull origin dev
+            else
+              git clone -b dev https://github.com/prathibhaBotCalm/redis-replica-demo.git
+              cd redis-replica-demo
+            fi
+
             echo "Logging into GHCR..."
             docker login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
 
@@ -69,7 +78,7 @@ jobs:
             docker pull ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest
 
             echo "Writing staging environment file..."
-            # We write the multiline secret to `.env` on the remote server
+            # If you're using a secret-based .env, write it out; otherwise, adjust as needed.
             echo "${{ secrets.STAGING_DOT_ENV }}" > .env
 
             echo "Deploying full stack via docker-compose..."
@@ -141,10 +150,22 @@ jobs:
           key: ${{ secrets.LIVE_SSH_KEY }}
           script: |
             set -euo pipefail
+            echo "Cloning or updating repository on remote server..."
+            if [ -d redis-replica-demo ]; then
+              cd redis-replica-demo
+              git pull origin main
+            else
+              git clone -b main https://github.com/prathibhabotcalm/redis-replica-demo.git
+              cd redis-replica-demo
+            fi
+
             echo "Logging into GHCR..."
             docker login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
+
             echo "Pulling latest live image..."
             docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
+
+            # Bring up Redis services if NODE_ENV is production.
             if [ "$NODE_ENV" = "production" ]; then
               export COMPOSE_PROFILES=production
               echo "Production mode: Bringing up Redis services"
@@ -153,6 +174,7 @@ jobs:
             else
               echo "Non-production mode: Skipping Redis services setup"
             fi
+
             echo "Determining active Next.js container color..."
             active_color=""
             if docker ps --filter "name=nextjs-app-blue" --format '{{.Names}}' | grep -q "nextjs-app-blue"; then
@@ -160,6 +182,7 @@ jobs:
             elif docker ps --filter "name=nextjs-app-green" --format '{{.Names}}' | grep -q "nextjs-app-green"; then
               active_color="green"
             fi
+
             if [ "$active_color" = "blue" ]; then
               new_color="green"
               new_host_port=3002
@@ -170,8 +193,10 @@ jobs:
               new_color="blue"
               new_host_port=3001
             fi
+
             new_container="nextjs-app-${new_color}"
             echo "Deploying new container: ${new_container} on host port ${new_host_port}"
+
             echo "Generating live environment file..."
             cat <<-'EOF' > .env
               NODE_ENV=production
