@@ -5,7 +5,7 @@ services:
   nextjs-app:
     build:
       context: .
-      target: production # Default to production build
+      # target: production # Default to production build
     ports:
       - '${APP_PORT}:${APP_PORT}'
     environment:
