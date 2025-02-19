@@ -36,14 +36,14 @@ jobs:
         uses: docker/setup-buildx-action@v2
         with:
           buildkitd-flags: --debug
-          
+
       - name: Build and Push Docker Image (Staging)
         id: build-staging
         uses: docker/build-push-action@v6.5.0
         with:
           context: .
           push: true
-          tags: 'ghcr.io/${{ github.repository }}:staging-latest'
+          tags: 'ghcr.io/${{ toLower(github.repository) }}:staging-latest'
           cache-from: type=gha
           cache-to: 'type=gha,mode=max'
       - name: Deploy to Staging Droplet
@@ -62,7 +62,7 @@ jobs:
 
             echo "Pulling latest staging image..."
 
-            docker pull ghcr.io/${{ github.repository }}:staging-latest
+            docker pull ghcr.io/${{ toLower(github.repository) }}:staging-latest
 
             echo "Deploying full stack via docker-compose..."
 
@@ -113,13 +113,19 @@ jobs:
           registry: ghcr.io
           username: '${{ github.actor }}'
           password: '${{ secrets.GITHUB_TOKEN }}'
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        with:
+          buildkitd-flags: --debug
+
       - name: Build and Push Docker Image (Live)
         id: build-live
         uses: docker/build-push-action@v6.5.0
         with:
           context: .
           push: true
-          tags: 'ghcr.io/${{ github.repository }}:live-latest'
+          tags: "ghcr.io/${{ toLower(github.repository) }}:live-latest"
           cache-from: type=gha
           cache-to: 'type=gha,mode=max'
       - name: Deploy to Live Droplet (Blue/Green)
@@ -140,7 +146,7 @@ jobs:
 
             echo "Pulling latest live image..."
 
-            docker pull ghcr.io/${{ github.repository }}:live-latest
+            docker pull ghcr.io/${{ toLower(github.repository) }}:live-latest
 
 
             # Conditionally bring up Redis services only if NODE_ENV is
@@ -222,7 +228,7 @@ jobs:
                           --env REDIS_SENTINELS="sentinel-1:${{ secrets.SENTINEL_1_PORT }},sentinel-2:${{ secrets.SENTINEL_2_PORT }},sentinel-3:${{ secrets.SENTINEL_3_PORT }}" \
                           --env REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }} \
                           --env REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }} \
-                          ghcr.io/${{ github.repository }}:live-latest
+                          ghcr.io/${{ toLower(github.repository) }}:live-latest
 
                         echo "Waiting for new container health..."
                         for i in {1..10}; do
