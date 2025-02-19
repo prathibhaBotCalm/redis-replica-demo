@@ -8,14 +8,11 @@ services:
       # target: production # Default to production build
     ports:
       - '${APP_PORT}:${APP_PORT}'
-    environment:
-      - NODE_ENV=${NODE_ENV}
-      - REDIS_SENTINELS=sentinel-1:${SENTINEL_1_PORT},sentinel-2:${SENTINEL_2_PORT},sentinel-3:${SENTINEL_3_PORT}
-      - REDIS_MASTER_NAME=${REDIS_MASTER_NAME}
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
     networks:
       - redis-network
     restart: unless-stopped
+    env_file:
+      - .env
 
   redis-master:
     image: redis/redis-stack:latest
