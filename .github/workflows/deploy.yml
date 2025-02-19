@@ -67,7 +67,7 @@ jobs:
             echo "Pulling latest staging image..."
             docker pull ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest
             echo "Deploying full stack via docker-compose..."
-            cp .env.staging .env
+            cp .env .env
             docker-compose pull
             docker-compose up -d
             echo "Staging deployment completed."
@@ -114,6 +114,10 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        with:
+          buildkitd-flags: --debug
       - name: Build and Push Docker Image (Live)
         id: build-live
         uses: docker/build-push-action@v6.5.0
