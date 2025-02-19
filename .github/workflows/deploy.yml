@@ -76,8 +76,8 @@ jobs:
             echo "Logging into GitHub Container Registry..."
             docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
 
-            # Tag the current 'latest' image as 'previous'
-            CURRENT_IMAGE=$(docker images ghcr.io/${{ steps.repo.outputs.repo }}:latest -q)
+            # Tag the current 'staging-latest' image as 'previous'
+            CURRENT_IMAGE=$(docker images ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest -q)
             if [ ! -z "$CURRENT_IMAGE" ]; then
               echo "Tagging current latest image as previous..."
               docker tag "$CURRENT_IMAGE" ghcr.io/${{ steps.repo.outputs.repo }}:previous
@@ -86,7 +86,7 @@ jobs:
             fi
 
             echo "Pulling the latest Docker image..."
-            docker pull ghcr.io/${{ steps.repo.outputs.repo }}:latest
+            docker pull ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest
 
             echo "Stopping existing container (if any)..."
             docker stop my-app || true
@@ -100,11 +100,11 @@ jobs:
             echo "Pruning dangling images..."
             docker image prune -f
 
-            echo "Removing old images except 'latest' and 'previous'..."
-            docker images ghcr.io/${{ steps.repo.outputs.repo }} --format "{{.Repository}}:{{.Tag}}" | grep -v ":latest$" | grep -v ":previous$" | xargs -r docker rmi -f || true
+            echo "Removing old images except 'staging-latest' and 'previous'..."
+            docker images ghcr.io/${{ steps.repo.outputs.repo }} --format "{{.Repository}}:{{.Tag}}" | grep -v ":staging-latest$" | grep -v ":previous$" | xargs -r docker rmi -f || true
 
             echo "Running the new container..."
-            docker run -d -p 80:${{ env.PORT }} --name my-app --restart always -e PORT=${{ env.PORT }} ghcr.io/${{ steps.repo.outputs.repo }}:latest
+            docker run -d -p 80:${{ env.PORT }} --name my-app --restart always -e PORT=${{ env.PORT }} ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest
 
             echo "Deployment completed successfully."
 
