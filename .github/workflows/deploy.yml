@@ -105,6 +105,10 @@ jobs:
             echo "Removing old images except 'staging-latest' and 'previous'..."
             docker images ghcr.io/${{ steps.repo.outputs.repo }} --format "{{.Repository}}:{{.Tag}}" | grep -v ":staging-latest$" | grep -v ":previous$" | xargs -r docker rmi -f || true
 
+            echo "Writing staging environment file..."
+            # If you're using a secret-based .env, write it out; otherwise, adjust as needed.
+            echo "${{ secrets.STAGING_DOT_ENV }}" > .env
+
             echo "Running the new container..."
             docker run -d -p 80:${{ env.PORT }} --name my-app --restart always -e PORT=${{ env.PORT }} ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest
 
