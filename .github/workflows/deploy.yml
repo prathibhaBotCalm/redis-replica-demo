@@ -61,31 +61,52 @@ jobs:
           username: ${{ secrets.STAGING_USER }}
           key: ${{ secrets.STAGING_SSH_KEY }}
           script: |
-            set -e
-            echo "Cloning or updating repository on remote server..."
-            if [ -d redis-replica-demo ]; then
-              cd redis-replica-demo
-              git pull origin dev
+            # Check if Docker is installed, and install it if not
+            if ! command -v docker &> /dev/null
+            then
+              echo "Docker not found, installing..."
+              apt-get update
+              apt-get install -y docker.io
+              systemctl start docker
+              systemctl enable docker
             else
-              git clone -b dev git@github.com:prathibhaBotCalm/redis-replica-demo.git
-              cd redis-replica-demo
+              echo "Docker is already installed"
             fi
 
-            echo "Logging into GHCR..."
-            docker login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
+            echo "Logging into GitHub Container Registry..."
+            docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
 
-            echo "Pulling latest staging image..."
-            docker pull ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest
+            # Tag the current 'latest' image as 'previous'
+            CURRENT_IMAGE=$(docker images ghcr.io/${{ steps.repo.outputs.repo }}:latest -q)
+            if [ ! -z "$CURRENT_IMAGE" ]; then
+              echo "Tagging current latest image as previous..."
+              docker tag "$CURRENT_IMAGE" ghcr.io/${{ steps.repo.outputs.repo }}:previous
+            else
+              echo "No current latest image found. Skipping tagging as previous."
+            fi
 
-            echo "Writing staging environment file..."
-            # If you're using a secret-based .env, write it out; otherwise, adjust as needed.
-            echo "${{ secrets.STAGING_DOT_ENV }}" > .env
+            echo "Pulling the latest Docker image..."
+            docker pull ghcr.io/${{ steps.repo.outputs.repo }}:latest
 
-            echo "Deploying full stack via docker-compose..."
-            docker-compose pull
-            docker-compose up --build -d
+            echo "Stopping existing container (if any)..."
+            docker stop my-app || true
 
-            echo "Staging deployment completed."
+            echo "Removing previous container (if any)..."
+            docker rm my-app-previous || true
+
+            echo "Renaming existing container to 'my-app-previous'..."
+            docker rename my-app my-app-previous || true
+
+            echo "Pruning dangling images..."
+            docker image prune -f
+
+            echo "Removing old images except 'latest' and 'previous'..."
+            docker images ghcr.io/${{ steps.repo.outputs.repo }} --format "{{.Repository}}:{{.Tag}}" | grep -v ":latest$" | grep -v ":previous$" | xargs -r docker rmi -f || true
+
+            echo "Running the new container..."
+            docker run -d -p 80:${{ env.PORT }} --name my-app --restart always -e PORT=${{ env.PORT }} ghcr.io/${{ steps.repo.outputs.repo }}:latest
+
+            echo "Deployment completed successfully."
 
   deploy-live:
     if: github.ref == 'refs/heads/main'
