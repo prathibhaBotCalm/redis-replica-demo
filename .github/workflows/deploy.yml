@@ -240,6 +240,11 @@ jobs:
               REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
               REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}
               REDIS_SENTINEL_QUORUM=${{ secrets.REDIS_SENTINEL_QUORUM }}
+              REDIS_SENTINELS_DEV: ${{ secrets.REDIS_SENTINELS_DEV }}
+              REDIS_SENTINELS_PROD: ${{ secrets.REDIS_SENTINELS_PROD }}
+              REDIS_HOST_DEV: ${{ secrets.REDIS_HOST_DEV }}
+              REDIS_HOST_PROD: ${{ secrets.REDIS_HOST_PROD }}
+              REDIS_PORT: ${{ secrets.REDIS_PORT }}
               EOF
                           echo "Starting new Next.js container..."
                           docker run -d -p ${new_host_port}:${{ secrets.APP_PORT }} --name ${new_container} --restart always \
