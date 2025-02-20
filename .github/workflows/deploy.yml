@@ -180,6 +180,25 @@ jobs:
           script: |
             set -euo pipefail
             export NODE_ENV=production
+            # Check if Docker is installed, and install it if not
+            if ! command -v docker &> /dev/null
+            then
+              echo "Docker not found, installing..."
+              apt-get update
+              apt-get install -y docker.io
+              systemctl start docker
+              systemctl enable docker
+            else
+              echo "Docker is already installed"
+            fi
+            # Check if docker-compose is installed, and install it if not
+            if ! command -v docker-compose &> /dev/null; then
+              echo "docker-compose not found, installing..."
+              apt-get update
+              apt-get install -y docker-compose
+            else
+              echo "docker-compose is already installed"
+            fi
             echo "Cloning or updating repository on remote server..."
             if [ -d redis-replica-demo ]; then
               cd redis-replica-demo
