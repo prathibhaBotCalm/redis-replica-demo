@@ -140,6 +140,11 @@ jobs:
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
           REDIS_MASTER_NAME: ${{ secrets.REDIS_MASTER_NAME }}
           REDIS_SENTINEL_QUORUM: ${{ secrets.REDIS_SENTINEL_QUORUM }}
+          REDIS_SENTINELS_DEV: ${{ secrets.REDIS_SENTINELS_DEV }}
+          REDIS_SENTINELS_PROD: ${{ secrets.REDIS_SENTINELS_PROD }}
+          REDIS_HOST_DEV: ${{ secrets.REDIS_HOST_DEV }}
+          REDIS_HOST_PROD: ${{ secrets.REDIS_HOST_PROD }}
+          REDIS_PORT: ${{ secrets.REDIS_PORT }}
       - name: Checkout Repository
         uses: actions/checkout@v4
       - name: Set repository name lower-case
@@ -174,7 +179,6 @@ jobs:
           key: ${{ secrets.LIVE_SSH_KEY }}
           script: |
             set -euo pipefail
-            echo ${{ secrets.LIVE_SSH_KEY }}
             echo "Cloning or updating repository on remote server..."
             if [ -d redis-replica-demo ]; then
               cd redis-replica-demo
