@@ -218,8 +218,8 @@ jobs:
             if [ "$NODE_ENV" = "production" ]; then
               export COMPOSE_PROFILES=production
               echo "Production mode: Bringing up Redis services"
-              docker-compose --profile production pull redis-master redis-slave-1 redis-slave-2 sentinel-1 sentinel-2 sentinel-3 redis-backup
-              docker-compose --profile production up -d redis-master redis-slave-1 redis-slave-2 sentinel-1 sentinel-2 sentinel-3 redis-backup
+              docker-compose --profile production pull
+              docker-compose --profile production up -d
             else
               echo "Non-production mode: Skipping Redis services setup"
             fi
