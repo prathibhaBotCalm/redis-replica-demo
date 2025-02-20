@@ -179,6 +179,7 @@ jobs:
           key: ${{ secrets.LIVE_SSH_KEY }}
           script: |
             set -euo pipefail
+            export NODE_ENV=production
             echo "Cloning or updating repository on remote server..."
             if [ -d redis-replica-demo ]; then
               cd redis-replica-demo
