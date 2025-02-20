@@ -216,7 +216,7 @@ jobs:
 
             # Bring up Redis services if NODE_ENV is production.
             if [ "$NODE_ENV" = "production" ]; then
-              export COMPOSE_PROFILES=production
+              export NODE_ENV=production
               echo "Production mode: Bringing up Redis services"
               docker-compose --profile production pull
               docker-compose --profile production up -d
@@ -272,6 +272,12 @@ jobs:
                             --env REDIS_SENTINELS="sentinel-1:${{ secrets.SENTINEL_1_PORT }},sentinel-2:${{ secrets.SENTINEL_2_PORT }},sentinel-3:${{ secrets.SENTINEL_3_PORT }}" \
                             --env REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }} \
                             --env REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }} \
+                            --env REDIS_SENTINEL_QUORUM=${{ secrets.REDIS_SENTINEL_QUORUM }} \
+                            --env REDIS_SENTINELS_DEV=${{ secrets.REDIS_SENTINELS_DEV }} \
+                            --env REDIS_SENTINELS_PROD=${{ secrets.REDIS_SENTINELS_PROD }} \
+                            --env REDIS_HOST_DEV=${{ secrets.REDIS_HOST_DEV }} \
+                            --env REDIS_HOST_PROD=${{ secrets.REDIS_HOST_PROD }} \
+                            --env REDIS_PORT=${{ secrets.REDIS_PORT }} \
                             ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
                           echo "Waiting for new container health..."
                           for i in {1..10}; do
