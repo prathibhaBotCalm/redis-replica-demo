@@ -1,6 +1,7 @@
 networks:
   redis-network:
     driver: bridge
+
 services:
   nextjs-app:
     build:
@@ -17,8 +18,9 @@ services:
   redis-master:
     image: redis/redis-stack:latest
     command: ['/scripts/init-master.sh']
-    ports:
-      - '${REDIS_MASTER_PORT}:6379'
+    # Removed host port mapping to avoid conflict
+    # ports:
+    #   - '${REDIS_MASTER_PORT}:6379'
     networks:
       - redis-network
     volumes:
@@ -41,8 +43,9 @@ services:
     depends_on:
       redis-master:
         condition: service_healthy
-    ports:
-      - '${REDIS_SLAVE_1_PORT}:6379'
+    # Removed host port mapping
+    # ports:
+    #   - '${REDIS_SLAVE_1_PORT}:6379'
     networks:
       - redis-network
     volumes:
@@ -61,8 +64,9 @@ services:
     depends_on:
       redis-master:
         condition: service_healthy
-    ports:
-      - '${REDIS_SLAVE_2_PORT}:6379'
+    # Removed host port mapping
+    # ports:
+    #   - '${REDIS_SLAVE_2_PORT}:6379'
     networks:
       - redis-network
     volumes:
@@ -83,8 +87,9 @@ services:
       - REDIS_MASTER_HOST=redis-master
       - REDIS_SENTINEL_QUORUM=${REDIS_SENTINEL_QUORUM}
       - REDIS_SENTINEL_PASSWORD=${REDIS_PASSWORD}
-    ports:
-      - '${SENTINEL_1_PORT}:26379'
+    # Optionally, if you don't need external access, remove the host mapping
+    # ports:
+    #   - '${SENTINEL_1_PORT}:26379'
     networks:
       - redis-network
     restart: always
@@ -99,8 +104,8 @@ services:
       - REDIS_MASTER_HOST=redis-master
       - REDIS_SENTINEL_QUORUM=${REDIS_SENTINEL_QUORUM}
       - REDIS_SENTINEL_PASSWORD=${REDIS_PASSWORD}
-    ports:
-      - '${SENTINEL_2_PORT}:26379'
+    # ports:
+    #   - '${SENTINEL_2_PORT}:26379'
     networks:
       - redis-network
     restart: always
@@ -115,8 +120,8 @@ services:
       - REDIS_MASTER_HOST=redis-master
       - REDIS_SENTINEL_QUORUM=${REDIS_SENTINEL_QUORUM}
       - REDIS_SENTINEL_PASSWORD=${REDIS_PASSWORD}
-    ports:
-      - '${SENTINEL_3_PORT}:26379'
+    # ports:
+    #   - '${SENTINEL_3_PORT}:26379'
     networks:
       - redis-network
     restart: always
