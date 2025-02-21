@@ -139,92 +139,79 @@
 #   redis-data:
 
 
-version: '3.8'
 
 networks:
   redis-network:
-    driver: bridge  # Defining the custom bridge network for Redis services
+    driver: bridge
 
 services:
-  # Next.js App Service
   nextjs-app:
-    build:
-      context: .
-      # target: production # Uncomment this if you need a production build
-    ports:
-      - '${APP_PORT}:${APP_PORT}'  # Map the environment-defined app port
-    networks:
-      - redis-network  # Connect to the redis-network
-    restart: unless-stopped
-    env_file:
-      - .env
-
-  # Redis Master Service
+      build:
+        context: .
+        # target: production # Default to production build
+      ports:
+        - '${APP_PORT}:${APP_PORT}'
+      networks:
+        - redis-network
+      restart: unless-stopped
+      env_file:
+        - .env
   redis-master:
     image: redis/redis-stack:latest
-    command: ['/scripts/init-master.sh']  # Run the custom init script for the master
+    command: ['/scripts/init-master.sh']
     ports:
-      - '${REDIS_MASTER_PORT}:6379'  # Expose Redis master on the defined port
+      - '${REDIS_MASTER_PORT}:6379'
     networks:
       - redis-network
     volumes:
-      - redis-data:/data  # Persist data in the redis-data volume
-      - ./backup:/backup  # Mount the backup directory
-      - ./scripts/init-master.sh:/scripts/init-master.sh:ro  # Mount init-master.sh script
+      - redis-data:/data
+      - ./backup:/backup
+      - ./scripts/init-master.sh:/scripts/init-master.sh:ro
     healthcheck:
-      test:
-        ['CMD', 'bash', '-c', 'redis-cli -a ${REDIS_PASSWORD} ping | grep PONG']  # Health check command
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
-      timeout: 5s
       retries: 5
+      start_period: 30s
+      timeout: 5s
     restart: always
-    profiles:
-      - production
 
-  # Redis Slave 1 Service
   redis-slave-1:
     image: redis/redis-stack:latest
-    command: ['/scripts/init-slave.sh']  # Run the custom init script for slave 1
+    command: ['/scripts/init-slave.sh']
     depends_on:
       redis-master:
-        condition: service_healthy  # Wait for Redis master to be healthy
+        condition: service_healthy
     ports:
-      - '${REDIS_SLAVE_1_PORT}:6379'  # Expose slave 1 on the defined port
+      - '${REDIS_SLAVE_1_PORT}:6379'
     networks:
       - redis-network
     volumes:
-      - ./scripts/init-slave.sh:/scripts/init-slave.sh:ro  # Mount init-slave.sh script
-    environment:
-      - REDIS_MASTER_HOST=redis-master
-      - REDIS_MASTER_PORT=6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD}  # Use the environment-defined Redis password
-    restart: always
-    profiles:
-      - production
-
-  # Redis Slave 2 Service
-  redis-slave-2:
-    image: redis/redis-stack:latest
-    command: ['/scripts/init-slave.sh']  # Run the custom init script for slave 2
-    depends_on:
-      redis-master:
-        condition: service_healthy  # Wait for Redis master to be healthy
-    ports:
-      - '${REDIS_SLAVE_2_PORT}:6379'  # Expose slave 2 on the defined port
-    networks:
-      - redis-network
-    volumes:
-      - ./scripts/init-slave.sh:/scripts/init-slave.sh:ro  # Mount init-slave.sh script
+      - ./scripts/init-slave.sh:/scripts/init-slave.sh:ro
     environment:
       - REDIS_MASTER_HOST=redis-master
       - REDIS_MASTER_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD}
     restart: always
-    profiles:
-      - production
 
-  # Redis Sentinel 1 Service
-  sentinel-1:
+  redis-slave-2:
+    image: redis/redis-stack:latest
+    command: ['/scripts/init-slave.sh']
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    ports:
+      - '${REDIS_SLAVE_2_PORT}:6379'
+    networks:
+      - redis-network
+    volumes:
+      - ./scripts/init-slave.sh:/scripts/init-slave.sh:ro
+    environment:
+      - REDIS_MASTER_HOST=redis-master
+      - REDIS_MASTER_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    restart: always
+
+  redis-sentinel-1:
     image: bitnami/redis-sentinel:latest
     environment:
       - REDIS_MASTER_NAME=${REDIS_MASTER_NAME}
@@ -233,15 +220,12 @@ services:
       - REDIS_SENTINEL_QUORUM=${REDIS_SENTINEL_QUORUM}
       - REDIS_SENTINEL_PASSWORD=${REDIS_PASSWORD}
     ports:
-      - '${SENTINEL_1_PORT}:26379'  # Expose Sentinel 1 on the defined port
+      - '${SENTINEL_1_PORT}:26379'
     networks:
       - redis-network
     restart: always
-    profiles:
-      - production
 
-  # Redis Sentinel 2 Service
-  sentinel-2:
+  redis-sentinel-2:
     image: bitnami/redis-sentinel:latest
     environment:
       - REDIS_MASTER_NAME=${REDIS_MASTER_NAME}
@@ -250,15 +234,12 @@ services:
       - REDIS_SENTINEL_QUORUM=${REDIS_SENTINEL_QUORUM}
       - REDIS_SENTINEL_PASSWORD=${REDIS_PASSWORD}
     ports:
-      - '${SENTINEL_2_PORT}:26379'  # Expose Sentinel 2 on the defined port
+      - '${SENTINEL_2_PORT}:26379'
     networks:
       - redis-network
     restart: always
-    profiles:
-      - production
 
-  # Redis Sentinel 3 Service
-  sentinel-3:
+  redis-sentinel-3:
     image: bitnami/redis-sentinel:latest
     environment:
       - REDIS_MASTER_NAME=${REDIS_MASTER_NAME}
@@ -267,25 +248,22 @@ services:
       - REDIS_SENTINEL_QUORUM=${REDIS_SENTINEL_QUORUM}
       - REDIS_SENTINEL_PASSWORD=${REDIS_PASSWORD}
     ports:
-      - '${SENTINEL_3_PORT}:26379'  # Expose Sentinel 3 on the defined port
+      - '${SENTINEL_3_PORT}:26379'
     networks:
       - redis-network
     restart: always
-    profiles:
-      - production
 
-  # Redis Backup Service
   redis-backup:
     image: alpine
     volumes:
-      - redis-data:/data  # Mount Redis data volume
-      - ./backup:/backup  # Mount the backup directory
-      - ./scripts/backup.sh:/scripts/backup.sh:ro  # Mount backup script
+      - redis-data:/data
+      - ./backup:/backup
+      - ./scripts/backup.sh:/scripts/backup.sh:ro
     networks:
-      - redis-network  # Connect to the Redis network
-    entrypoint: ['/bin/sh', '/scripts/backup.sh']  # Execute backup script
-    profiles:
-      - production
+      - redis-network
+    entrypoint: ['/bin/sh', '/scripts/backup.sh']
+    restart: always
 
 volumes:
-  redis-data:  # Define a volume for Redis data persistence
+  redis-data:
+
