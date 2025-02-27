@@ -97,7 +97,16 @@ jobs:
           host: ${{ secrets.STAGING_HOST }}
           username: ${{ secrets.STAGING_USER }}
           key: ${{ secrets.STAGING_SSH_KEY }}
-          source: 'docker-compose.yml,.env.example'
+          # source: 'docker-compose.yml,.env.example,.env,'
+          source: |
+            docker-compose.yml
+            Dockerfile
+            package.json
+            yarn.lock
+            src/
+            public/
+            .env.example
+            .env
           target: '/home/${{ secrets.STAGING_USER }}/app'
 
       - name: Deploy to Staging Environment

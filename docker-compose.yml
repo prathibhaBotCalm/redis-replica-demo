@@ -1,0 +1,147 @@
+networks:
+  redis-network:
+    driver: bridge
+
+services:
+  nextjs-app:
+    # image: 'ghcr.io/${REPO}:latest'
+    ports:
+      - '${APP_PORT}:${APP_PORT}'
+    networks:
+      - redis-network
+    restart: unless-stopped
+    env_file:
+      - .env
+
+  redis-master:
+    image: redis/redis-stack:latest
+    command: ['/scripts/init-master.sh']
+    ports:
+      - '${REDIS_MASTER_PORT}:6379'
+    networks:
+      - redis-network
+    volumes:
+      - redis-data:/data
+      - ./backup:/backup
+      - ./scripts/init-master.sh:/scripts/init-master.sh:ro
+    healthcheck:
+      test:
+        ['CMD', 'bash', '-c', 'redis-cli -a ${REDIS_PASSWORD} ping | grep PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+    profiles:
+      - production
+
+  redis-slave-1:
+    image: redis/redis-stack:latest
+    command: ['/scripts/init-slave.sh']
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    ports:
+      - '${REDIS_SLAVE_1_PORT}:6379'
+    networks:
+      - redis-network
+    volumes:
+      - ./scripts/init-slave.sh:/scripts/init-slave.sh:ro
+    environment:
+      - REDIS_MASTER_HOST=redis-master
+      - REDIS_MASTER_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    restart: always
+    profiles:
+      - production
+
+  redis-slave-2:
+    image: redis/redis-stack:latest
+    command: ['/scripts/init-slave.sh']
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    ports:
+      - '${REDIS_SLAVE_2_PORT}:6379'
+    networks:
+      - redis-network
+    volumes:
+      - ./scripts/init-slave.sh:/scripts/init-slave.sh:ro
+    environment:
+      - REDIS_MASTER_HOST=redis-master
+      - REDIS_MASTER_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    restart: always
+    profiles:
+      - production
+
+  sentinel-1:
+    image: bitnami/redis-sentinel:latest
+    environment:
+      - REDIS_MASTER_NAME=${REDIS_MASTER_NAME}
+      - REDIS_MASTER_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_MASTER_HOST=redis-master
+      - REDIS_SENTINEL_QUORUM=${REDIS_SENTINEL_QUORUM}
+      - REDIS_SENTINEL_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_SENTINEL_DOWN_AFTER_MILLISECONDS=10000
+      - REDIS_SENTINEL_FAILOVER_TIMEOUT=180000
+      - REDIS_SENTINEL_ANNOUNCE_HOSTNAMES=yes
+    ports:
+      - '${SENTINEL_1_PORT}:26379'
+    networks:
+      - redis-network
+    restart: always
+    profiles:
+      - production
+
+  sentinel-2:
+    image: bitnami/redis-sentinel:latest
+    environment:
+      - REDIS_MASTER_NAME=${REDIS_MASTER_NAME}
+      - REDIS_MASTER_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_MASTER_HOST=redis-master
+      - REDIS_SENTINEL_QUORUM=${REDIS_SENTINEL_QUORUM}
+      - REDIS_SENTINEL_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_SENTINEL_DOWN_AFTER_MILLISECONDS=10000
+      - REDIS_SENTINEL_FAILOVER_TIMEOUT=180000
+      - REDIS_SENTINEL_ANNOUNCE_HOSTNAMES=yes
+    ports:
+      - '${SENTINEL_2_PORT}:26379'
+    networks:
+      - redis-network
+    restart: always
+    profiles:
+      - production
+
+  sentinel-3:
+    image: bitnami/redis-sentinel:latest
+    environment:
+      - REDIS_MASTER_NAME=${REDIS_MASTER_NAME}
+      - REDIS_MASTER_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_MASTER_HOST=redis-master
+      - REDIS_SENTINEL_QUORUM=${REDIS_SENTINEL_QUORUM}
+      - REDIS_SENTINEL_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_SENTINEL_DOWN_AFTER_MILLISECONDS=10000
+      - REDIS_SENTINEL_FAILOVER_TIMEOUT=180000
+      - REDIS_SENTINEL_ANNOUNCE_HOSTNAMES=yes
+    ports:
+      - '${SENTINEL_3_PORT}:26379'
+    networks:
+      - redis-network
+    restart: always
+    profiles:
+      - production
+
+  redis-backup:
+    image: alpine
+    volumes:
+      - redis-data:/data
+      - ./backup:/backup
+      - ./scripts/backup.sh:/scripts/backup.sh:ro
+    networks:
+      - redis-network
+    entrypoint: ['/bin/sh', '/scripts/backup.sh']
+    profiles:
+      - production
+
+volumes:
+  redis-data:

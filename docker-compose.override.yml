@@ -1,0 +1,5 @@
+# docker-compose.override.yml (local dev only)
+services:
+  nextjs-app:
+    build:
+      context: .
