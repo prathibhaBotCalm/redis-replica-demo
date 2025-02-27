@@ -97,16 +97,7 @@ jobs:
           host: ${{ secrets.STAGING_HOST }}
           username: ${{ secrets.STAGING_USER }}
           key: ${{ secrets.STAGING_SSH_KEY }}
-          # source: 'docker-compose.yml,.env.example,.env,'
-          source: |
-            docker-compose.yml
-            Dockerfile
-            package.json
-            yarn.lock
-            src/
-            public/
-            .env.example
-            .env
+          source: 'docker-compose.yml,.env.example,.env,Dockerfile,package.json,yarn.lock,src/,public/'
           target: '/home/${{ secrets.STAGING_USER }}/app'
 
       - name: Deploy to Staging Environment
@@ -499,7 +490,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     name: Promote Canary to Stable (Manual Approval)
-    # environment: 
+    # environment:
     #   name: Production
     #   url: ${{ secrets.LIVE_HOST }}
     steps:
