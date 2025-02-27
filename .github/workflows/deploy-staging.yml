@@ -9,6 +9,9 @@ jobs:
     env:
       PORT: 3000
       NODE_ENV: development
+      STAGING_HOST: ${{ secrets.STAGING_HOST }}
+      STAGING_USER: ${{ secrets.STAGING_USER }}
+      STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
     steps:
       - name: Verify Staging Secrets
         run: |
@@ -18,10 +21,6 @@ jobs:
               exit 1
             fi
           done
-        env:
-          STAGING_HOST: ${{ secrets.STAGING_HOST }}
-          STAGING_USER: ${{ secrets.STAGING_USER }}
-          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
 
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -32,8 +31,7 @@ jobs:
           repo=$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
           echo "repo=${repo}" >> $GITHUB_OUTPUT
 
-      # Copy docker-compose files and deploy
-      - name: Copy docker-compose.yml to remote server
+      - name: Copy necessary files to remote server
         uses: appleboy/scp-action@master
         with:
           host: ${{ secrets.STAGING_HOST }}

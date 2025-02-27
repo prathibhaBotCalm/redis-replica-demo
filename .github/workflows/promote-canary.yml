@@ -7,6 +7,12 @@ jobs:
     runs-on: ubuntu-latest
     name: Promote Canary to Stable
     steps:
+      - name: Get repository name
+        id: repo
+        run: |
+          repo=$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
+          echo "repo=${repo}" >> $GITHUB_OUTPUT
+
       - name: Promote Canary to Stable
         uses: appleboy/ssh-action@master
         with:
