@@ -1,0 +1,61 @@
+name: Promote Canary to Stable (Manual Approval)
+on:
+  workflow_call:
+
+jobs:
+  promote-canary:
+    runs-on: ubuntu-latest
+    name: Promote Canary to Stable
+    steps:
+      - name: Promote Canary to Stable
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.LIVE_HOST }}
+          username: ${{ secrets.LIVE_USER }}
+          key: ${{ secrets.LIVE_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd /home/${{ secrets.LIVE_USER }}/app
+
+            echo "Promoting canary deployment to stable..."
+
+            # Tag the canary image as the new stable
+            docker tag ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }} ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
+
+            # Update nginx configuration to direct all traffic to the promoted canary
+            cat <<EOF | sudo tee /etc/nginx/conf.d/nextjs-app.conf
+            upstream nextjs_app {
+                server 127.0.0.1:3001;
+            }
+
+            server {
+                listen 80;
+                
+                # Add header to identify which version is serving the request
+                add_header X-Version stable;
+                
+                location / {
+                    proxy_pass http://nextjs_app;
+                    proxy_set_header Host \$host;
+                    proxy_set_header X-Real-IP \$remote_addr;
+                    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                }
+            }
+            EOF
+
+            # Reload nginx
+            sudo nginx -t && sudo systemctl reload nginx
+
+            # Update stable container with the promoted image
+            docker-compose stop app-stable
+            docker-compose rm -f app-stable
+            docker-compose up -d app-stable
+
+            # Clean up the canary container
+            docker-compose stop app-canary
+            docker-compose rm -f app-canary
+
+            # Prune unused images
+            docker image prune -f
+
+            echo "Canary deployment successfully promoted to stable."

@@ -1,0 +1,131 @@
+name: Deploy to Staging Environment
+on:
+  workflow_call:
+
+jobs:
+  deploy-staging:
+    runs-on: ubuntu-latest
+    name: Deploy to Staging Environment
+    env:
+      PORT: 3000
+      NODE_ENV: development
+    steps:
+      - name: Verify Staging Secrets
+        run: |
+          for secret in STAGING_HOST STAGING_USER STAGING_SSH_KEY; do
+            if [ -z "${!secret}" ]; then
+              echo "::error::Secret $secret is not set"
+              exit 1
+            fi
+          done
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set repository name lower-case
+        id: repo
+        run: |
+          repo=$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
+          echo "repo=${repo}" >> $GITHUB_OUTPUT
+
+      # Copy docker-compose files and deploy
+      - name: Copy docker-compose.yml to remote server
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          source: 'docker-compose.yml,.env.example,.env,Dockerfile,package.json,yarn.lock,src/,public/'
+          target: '/home/${{ secrets.STAGING_USER }}/app'
+
+      - name: Deploy to Staging Environment
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            mkdir -p /home/${{ secrets.STAGING_USER }}/app
+            cd /home/${{ secrets.STAGING_USER }}/app
+
+            # Check if Docker is installed, and install it if not
+            if ! command -v docker &> /dev/null; then
+              echo "Docker not found, installing..."
+              sudo apt-get update
+              sudo apt-get install -y docker.io
+              sudo systemctl start docker
+              sudo systemctl enable docker
+              sudo usermod -aG docker $USER
+            else
+              echo "Docker is already installed"
+            fi
+
+            # Check if docker-compose is installed, and install it if not
+            if ! command -v docker-compose &> /dev/null; then
+              echo "docker-compose not found, installing..."
+              sudo apt-get update
+              sudo apt-get install -y docker-compose
+            else
+              echo "docker-compose is already installed"
+            fi
+
+            echo "Logging into GitHub Container Registry..."
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            # Create .env file from example or update if exists
+            if [ ! -f .env ]; then
+              cp .env.example .env
+            fi
+
+            # Update environment variables
+            cat <<EOF >> .env
+            NODE_ENV=development
+            PORT=${{ env.PORT }}
+            EOF
+
+            # Create or update docker-compose.override.yml for staging
+            cat <<EOF > docker-compose.override.yml
+            version: '3.8'
+            services:
+              app:
+                image: ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest
+                ports:
+                  - "80:${{ env.PORT }}"
+                environment:
+                  - NODE_ENV=development
+                  - PORT=${{ env.PORT }}
+                restart: always
+            EOF
+
+            # Pull the latest image and tag as staging-latest
+            docker pull ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest
+
+            # Tag the current 'staging-latest' image as 'previous' if it exists
+            CURRENT_IMAGE=$(docker images ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest -q)
+            if [ ! -z "$CURRENT_IMAGE" ]; then
+              echo "Tagging current latest image as previous..."
+              docker tag "$CURRENT_IMAGE" ghcr.io/${{ steps.repo.outputs.repo }}:previous
+            fi
+
+            # Stop and remove any existing containers from previous deployments
+            echo "Stopping any existing containers..."
+            docker-compose down || true
+
+            # Start new containers
+            echo "Starting new containers..."
+            docker-compose up -d
+
+            # Prune unused images to free up space
+            echo "Pruning dangling images..."
+            docker image prune -f
+
+            # Remove old images except 'staging-latest' and 'previous'
+            echo "Removing old images except 'staging-latest' and 'previous'..."
+            docker images ghcr.io/${{ steps.repo.outputs.repo }} --format "{{.Repository}}:{{.Tag}}" | grep -v ":staging-latest$" | grep -v ":previous$" | xargs -r docker rmi -f || true
+
+            echo "Deployment to staging completed successfully."

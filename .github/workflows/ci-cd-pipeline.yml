@@ -1,0 +1,36 @@
+name: CI/CD Pipeline
+on:
+  push:
+    branches:
+      - main
+      - dev
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-docker.yml
+
+  deploy-staging:
+    needs: build
+    uses: ./.github/workflows/deploy-staging.yml
+    if: github.ref == 'refs/heads/dev'
+
+  deploy-live-canary:
+    needs: build
+    uses: ./.github/workflows/deploy-live-canary.yml
+    if: github.ref == 'refs/heads/main'
+
+  promote-canary:
+    needs: deploy-live-canary
+    uses: ./.github/workflows/promote-canary.yml
+    if: github.ref == 'refs/heads/main'
+
+  rollback:
+    if: failure() && github.ref == 'refs/heads/main'
+    needs: deploy-live-canary
+    uses: ./.github/workflows/rollback.yml
