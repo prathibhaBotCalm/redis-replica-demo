@@ -2201,3 +2201,79 @@
 2025-02-27 12:12:04:124 error: [RepositoryManager] Connection error during 'users' repository initialization: getaddrinfo ENOTFOUND redis-master
 2025-02-27 12:12:04:124 warn: [Redis] Gracefully closing Redis connections due to issues
 2025-02-27 12:12:04:124 info: [Redis] All Redis connections closed
+2025-02-27 12:40:42:4042 info: [Redis] Using production Redis host: redis-master
+2025-02-27 12:40:42:4042 info: [Redis] Using production Redis host: redis-master
+2025-02-27 12:40:42:4042 info: [Redis] Using production Redis host: redis-master
+2025-02-27 12:40:42:4042 info: [Redis] Using production Redis host: redis-master
+2025-02-27 12:40:42:4042 info: [RepositoryManager] Initializing repository for 'users'
+2025-02-27 12:40:42:4042 info: [RepositoryManager] Initializing repository for 'users'
+2025-02-27 12:40:45:4045 warn: [Redis] Sentinel query failed: Sentinel query timed out
+2025-02-27 12:40:45:4045 warn: [Redis] Sentinel query failed: Sentinel query timed out
+2025-02-27 12:40:48:4048 warn: [Redis] Sentinel query failed: Sentinel query timed out
+2025-02-27 12:40:49:4049 warn: [Redis] Sentinel query failed: Sentinel query timed out
+2025-02-27 12:40:51:4051 warn: [Redis] Sentinel query failed: Sentinel query timed out
+2025-02-27 12:40:51:4051 warn: [Redis] All sentinels failed, switching to direct connection mode
+2025-02-27 12:40:51:4051 info: [Redis] Connecting Redis-OM to: redis://:your_redis_password@redis-master:6379
+2025-02-27 12:40:51:4051 error: [RepositoryManager] Connection error during 'users' repository initialization: getaddrinfo ENOTFOUND redis-master
+2025-02-27 12:40:51:4051 warn: [Redis] Gracefully closing Redis connections due to issues
+2025-02-27 12:40:51:4051 info: [Redis] All Redis connections closed
+2025-02-27 12:40:52:4052 warn: [Redis] Sentinel query failed: Sentinel query timed out
+2025-02-27 12:40:52:4052 warn: [Redis] All sentinels failed, switching to direct connection mode
+2025-02-27 12:40:52:4052 info: [Redis] Connecting Redis-OM to: redis://:your_redis_password@redis-master:6379
+2025-02-27 12:40:52:4052 error: [RepositoryManager] Connection error during 'users' repository initialization: getaddrinfo ENOTFOUND redis-master
+2025-02-27 12:40:52:4052 warn: [Redis] Gracefully closing Redis connections due to issues
+2025-02-27 12:40:52:4052 info: [Redis] All Redis connections closed
+2025-02-27 12:45:26:4526 info: [Redis] Using development Redis host: 157.230.253.3
+2025-02-27 12:45:26:4526 info: [Redis] Using development Redis host: 157.230.253.3
+2025-02-27 12:45:27:4527 info: [Redis] Using development Redis host: 157.230.253.3
+2025-02-27 12:45:27:4527 info: [Redis] Using development Redis host: 157.230.253.3
+2025-02-27 12:45:27:4527 info: [RepositoryManager] Initializing repository for 'users'
+2025-02-27 12:45:27:4527 info: [RepositoryManager] Initializing repository for 'users'
+2025-02-27 12:45:27:4527 info: [Redis] Replacing internal IP 172.18.0.6 with configured host 157.230.253.3
+2025-02-27 12:45:27:4527 info: [Redis] Master Address: 157.230.253.3:6379
+2025-02-27 12:45:27:4527 info: [Redis] Connecting Redis-OM to: redis://:your_redis_password@157.230.253.3:6379
+2025-02-27 12:45:27:4527 info: [Redis] Replacing internal IP 172.18.0.6 with configured host 157.230.253.3
+2025-02-27 12:45:27:4527 info: [Redis] Master Address: 157.230.253.3:6379
+2025-02-27 12:45:27:4527 info: [Redis] Connecting Redis-OM to: redis://:your_redis_password@157.230.253.3:6379
+2025-02-27 12:45:27:4527 info: [Redis] Redis-OM client connected
+2025-02-27 12:45:27:4527 info: [Redis] Redis-OM client connected
+2025-02-27 12:45:27:4527 info: [RepositoryManager] Repository and index for 'users' initialized successfully
+2025-02-27 12:45:27:4527 info: [RepositoryManager] Repository and index for 'users' initialized successfully
+2025-02-27 12:52:53:5253 info: [Redis] Using production Redis host: redis-master
+2025-02-27 12:52:53:5253 info: [Redis] Using production Redis host: redis-master
+2025-02-27 12:52:54:5254 info: [Redis] Using production Redis host: redis-master
+2025-02-27 12:52:54:5254 info: [Redis] Using production Redis host: redis-master
+2025-02-27 12:52:54:5254 info: [RepositoryManager] Initializing repository for 'users'
+2025-02-27 12:52:54:5254 info: [RepositoryManager] Initializing repository for 'users'
+2025-02-27 12:52:57:5257 warn: [Redis] Sentinel query failed: Sentinel query timed out
+2025-02-27 12:52:57:5257 warn: [Redis] Sentinel query failed: Sentinel query timed out
+2025-02-27 12:53:00:530 warn: [Redis] Sentinel query failed: Sentinel query timed out
+2025-02-27 12:53:00:530 warn: [Redis] Sentinel query failed: Sentinel query timed out
+2025-02-27 12:53:03:533 warn: [Redis] Sentinel query failed: Sentinel query timed out
+2025-02-27 12:53:03:533 warn: [Redis] All sentinels failed, switching to direct connection mode
+2025-02-27 12:53:03:533 info: [Redis] Connecting Redis-OM to: redis://:your_redis_password@redis-master:6379
+2025-02-27 12:53:03:533 warn: [Redis] Sentinel query failed: Sentinel query timed out
+2025-02-27 12:53:03:533 warn: [Redis] All sentinels failed, switching to direct connection mode
+2025-02-27 12:53:03:533 info: [Redis] Connecting Redis-OM to: redis://:your_redis_password@redis-master:6379
+2025-02-27 12:53:03:533 error: [RepositoryManager] Connection error during 'users' repository initialization: getaddrinfo ENOTFOUND redis-master
+2025-02-27 12:53:03:533 warn: [Redis] Gracefully closing Redis connections due to issues
+2025-02-27 12:53:03:533 info: [Redis] All Redis connections closed
+2025-02-27 12:53:03:533 error: [RepositoryManager] Connection error during 'users' repository initialization: getaddrinfo ENOTFOUND redis-master
+2025-02-27 12:53:03:533 warn: [Redis] Gracefully closing Redis connections due to issues
+2025-02-27 12:53:03:533 info: [Redis] All Redis connections closed
+2025-02-27 13:22:22:2222 info: [Redis] Using development Redis host: 157.230.253.3
+2025-02-27 13:22:22:2222 info: [Redis] Using development Redis host: 157.230.253.3
+2025-02-27 13:22:22:2222 info: [Redis] Using development Redis host: 157.230.253.3
+2025-02-27 13:22:22:2222 info: [Redis] Using development Redis host: 157.230.253.3
+2025-02-27 13:22:22:2222 info: [RepositoryManager] Initializing repository for 'users'
+2025-02-27 13:22:22:2222 info: [RepositoryManager] Initializing repository for 'users'
+2025-02-27 13:22:22:2222 info: [Redis] Replacing internal IP 172.18.0.6 with configured host 157.230.253.3
+2025-02-27 13:22:22:2222 info: [Redis] Master Address: 157.230.253.3:6379
+2025-02-27 13:22:22:2222 info: [Redis] Connecting Redis-OM to: redis://:your_redis_password@157.230.253.3:6379
+2025-02-27 13:22:22:2222 info: [Redis] Redis-OM client connected
+2025-02-27 13:22:22:2222 info: [Redis] Replacing internal IP 172.18.0.6 with configured host 157.230.253.3
+2025-02-27 13:22:22:2222 info: [Redis] Master Address: 157.230.253.3:6379
+2025-02-27 13:22:22:2222 info: [Redis] Connecting Redis-OM to: redis://:your_redis_password@157.230.253.3:6379
+2025-02-27 13:22:22:2222 info: [Redis] Redis-OM client connected
+2025-02-27 13:22:22:2222 info: [RepositoryManager] Repository and index for 'users' initialized successfully
+2025-02-27 13:22:22:2222 info: [RepositoryManager] Repository and index for 'users' initialized successfully
