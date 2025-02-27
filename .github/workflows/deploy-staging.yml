@@ -1,7 +1,6 @@
 name: Deploy to Staging Environment
 on:
   workflow_call:
-
 jobs:
   deploy-staging:
     runs-on: ubuntu-latest

@@ -18,6 +18,7 @@ jobs:
   deploy-staging:
     needs: build
     uses: ./.github/workflows/deploy-staging.yml
+    secrets: inherit
     if: github.ref == 'refs/heads/dev'
 
   deploy-live-canary:
