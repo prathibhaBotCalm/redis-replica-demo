@@ -13,6 +13,12 @@ jobs:
       STAGING_USER: ${{ secrets.STAGING_USER }}
       STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
     steps:
+      - name: Echo Staging Secrets (For Debugging)
+        run: |
+          echo "STAGING_HOST: ${{ secrets.STAGING_HOST }}"
+          echo "STAGING_USER: ${{ secrets.STAGING_USER }}"
+          echo "STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}"  # Be cautious about exposing private keys
+
       - name: Verify Staging Secrets
         run: |
           for secret in STAGING_HOST STAGING_USER STAGING_SSH_KEY; do
