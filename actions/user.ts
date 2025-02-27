@@ -2,10 +2,22 @@
 
 import { initializeUserRepository } from '@/schema/user';
 
+let cachedUserRepository: Awaited<
+  ReturnType<typeof initializeUserRepository>
+> | null = null;
+
+// Initialize the user repository once and cache it
+async function getUserRepository() {
+  if (!cachedUserRepository) {
+    cachedUserRepository = await initializeUserRepository();
+  }
+  return cachedUserRepository;
+}
+
 // Function to get all users
 export async function getUsers() {
   try {
-    const userRepository = await initializeUserRepository();
+    const userRepository = await getUserRepository();
     const users = await userRepository.search().returnAll();
     return {
       status: 200,
@@ -25,7 +37,7 @@ export async function getUsers() {
 // Function to create a new user
 export async function createUser(name: string, email?: string, age?: number) {
   try {
-    const userRepository = await initializeUserRepository();
+    const userRepository = await getUserRepository();
     const user = await userRepository.save({ name, email, age });
     return {
       status: 200,

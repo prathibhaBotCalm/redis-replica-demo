@@ -1,4 +1,4 @@
-import { initializeRepository } from '@/utils/initializeRepository';
+import repositoryManager from '@/utils/initializeRepository';
 import { Schema } from 'redis-om';
 
 // Define the User schema
@@ -9,5 +9,5 @@ const userSchema = new Schema('users', {
 });
 
 export async function initializeUserRepository() {
-  return initializeRepository(userSchema);
+  return repositoryManager.initializeRepository(userSchema);
 }
