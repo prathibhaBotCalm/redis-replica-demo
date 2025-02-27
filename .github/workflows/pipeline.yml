@@ -219,12 +219,6 @@ jobs:
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
           REDIS_MASTER_NAME: ${{ secrets.REDIS_MASTER_NAME }}
           REDIS_SENTINEL_QUORUM: ${{ secrets.REDIS_SENTINEL_QUORUM }}
-          REDIS_SENTINELS_DEV: ${{ secrets.REDIS_SENTINELS_DEV }}
-          REDIS_SENTINELS_PROD: ${{ secrets.REDIS_SENTINELS_PROD }}
-          REDIS_HOST_DEV: ${{ secrets.REDIS_HOST_DEV }}
-          REDIS_HOST_PROD: ${{ secrets.REDIS_HOST_PROD }}
-          REDIS_PORT: ${{ secrets.REDIS_PORT }}
-          IS_DEV: ${{ secrets.IS_DEV }}
 
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -276,16 +270,6 @@ jobs:
               echo "docker-compose is already installed"
             fi
 
-            # Ensure Redis repository is cloned or updated
-            echo "Cloning or updating repository on remote server..."
-            if [ -d redis-replica-demo ]; then
-              cd redis-replica-demo
-              git pull origin main
-              cd ..
-            else
-              git clone -b main git@github.com:prathibhaBotCalm/redis-replica-demo.git
-            fi
-
             echo "Logging into GHCR..."
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
@@ -307,7 +291,7 @@ jobs:
             REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
             REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}
             REDIS_SENTINEL_QUORUM=${{ secrets.REDIS_SENTINEL_QUORUM }}
-            REDIS_SENTINELS_PROD=sentinel-1:${{ secrets.SENTINEL_1_PORT }},sentinel-2:${{ secrets.SENTINEL_2_PORT }},sentinel-3:${{ secrets.SENTINEL_3_PORT }}
+            REDIS_SENTINELS=sentinel-1:${{ secrets.SENTINEL_1_PORT }},sentinel-2:${{ secrets.SENTINEL_2_PORT }},sentinel-3:${{ secrets.SENTINEL_3_PORT }}
             EOF
 
             # Pull the latest image and the specific commit hash image
@@ -316,8 +300,8 @@ jobs:
             docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
 
             # Check if we have stable and canary containers running
-            STABLE_RUNNING=$(docker ps -q -f name=nextjs-app-stable)
-            CANARY_RUNNING=$(docker ps -q -f name=nextjs-app-canary)
+            STABLE_RUNNING=$(docker ps -q -f name=nextjs-app-stable || true)
+            CANARY_RUNNING=$(docker ps -q -f name=nextjs-app-canary || true)
 
             # Create or update docker-compose.override.yml for canary deployment
             cat <<EOF > docker-compose.override.yml
@@ -329,14 +313,12 @@ jobs:
                 command: redis-server --requirepass ${{ secrets.REDIS_PASSWORD }}
                 ports:
                   - "${{ secrets.REDIS_MASTER_PORT }}:6379"
-                profiles: ["production", "redis"]
 
               redis-slave-1:
                 image: redis:7.0
                 command: redis-server --slaveof redis-master 6379 --requirepass ${{ secrets.REDIS_PASSWORD }} --masterauth ${{ secrets.REDIS_PASSWORD }}
                 ports:
                   - "${{ secrets.REDIS_SLAVE_1_PORT }}:6379"
-                profiles: ["production", "redis"]
                 depends_on:
                   - redis-master
 
@@ -345,7 +327,6 @@ jobs:
                 command: redis-server --slaveof redis-master 6379 --requirepass ${{ secrets.REDIS_PASSWORD }} --masterauth ${{ secrets.REDIS_PASSWORD }}
                 ports:
                   - "${{ secrets.REDIS_SLAVE_2_PORT }}:6379"
-                profiles: ["production", "redis"]
                 depends_on:
                   - redis-master
 
@@ -354,7 +335,6 @@ jobs:
                 command: redis-sentinel /etc/redis/sentinel.conf
                 ports:
                   - "${{ secrets.SENTINEL_1_PORT }}:26379"
-                profiles: ["production", "redis"]
                 depends_on:
                   - redis-master
                   - redis-slave-1
@@ -367,7 +347,6 @@ jobs:
                 command: redis-sentinel /etc/redis/sentinel.conf
                 ports:
                   - "${{ secrets.SENTINEL_2_PORT }}:26379"
-                profiles: ["production", "redis"]
                 depends_on:
                   - redis-master
                   - redis-slave-1
@@ -380,7 +359,6 @@ jobs:
                 command: redis-sentinel /etc/redis/sentinel.conf
                 ports:
                   - "${{ secrets.SENTINEL_3_PORT }}:26379"
-                profiles: ["production", "redis"]
                 depends_on:
                   - redis-master
                   - redis-slave-1
@@ -441,7 +419,7 @@ jobs:
 
             # Bring up Redis services and application containers
             echo "Starting Redis services and application containers..."
-            docker-compose --profile production up -d
+            docker-compose up -d
 
             # Wait for services to be ready
             echo "Waiting for services to be ready..."
@@ -512,7 +490,9 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     name: Promote Canary to Stable (Manual Approval)
-    # environment: Production
+    # environment: 
+    #   name: Production
+    #   url: ${{ secrets.LIVE_HOST }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -616,7 +596,7 @@ jobs:
             sudo nginx -t && sudo systemctl reload nginx
 
             # Clean up the canary container
-            docker-compose stop app-canary
-            docker-compose rm -f app-canary
+            docker-compose stop app-canary || true
+            docker-compose rm -f app-canary || true
 
             echo "Rollback completed successfully."
