@@ -30,7 +30,7 @@ services:
       - ./scripts/init-master.sh:/scripts/init-master.sh:ro
     healthcheck:
       test:
-        ['CMD', 'bash', '-c', 'redis-cli -a ${REDIS_PASSWORD} ping | grep PONG']
+        ['CMD', 'bash', '-c', 'redis-cli -a $${REDIS_PASSWORD} ping | grep PONG']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -146,8 +146,20 @@ services:
     entrypoint: ['/bin/sh', '/scripts/backup.sh']
     profiles:
       - production
+    # Add cron for scheduling backups
+    command: ['/bin/sh', '-c', 'apk add --no-cache dcron && echo "0 0 * * * /scripts/backup.sh" | crontab - && crond -f']
 
   # --- Monitoring Services ---
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    environment:
+      - REDIS_ADDR=redis-master:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    networks:
+      - redis-network
+      - monitoring-network
+    restart: always
+
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
@@ -165,10 +177,13 @@ services:
     environment:
       GF_SECURITY_ADMIN_PASSWORD: "admin"  # Change this for production
     ports:
-      - "3005:3005"   # Map host port 3005 to container port 3005
+      - "3005:3000"   # Map host port 3005 to container port 3000 (fixed)
     networks:
       - monitoring-network
+    volumes:
+      - grafana-data:/var/lib/grafana
     restart: always
 
 volumes:
   redis-data:
+  grafana-data:
