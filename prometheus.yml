@@ -14,7 +14,7 @@ scrape_configs:
   # Optional: Scrape Grafana's internal metrics.
   # Grafana exposes metrics on /metrics and listens on port 3000 inside the container.
   # Uncomment the block below if you have enabled Grafana metrics.
-  # - job_name: 'grafana'
-  #   metrics_path: /metrics
-  #   static_configs:
-  #     - targets: ['grafana:3000']
+  - job_name: 'grafana'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['grafana:3000']
