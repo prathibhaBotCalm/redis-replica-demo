@@ -117,16 +117,16 @@ jobs:
             IS_DEV=${{ secrets.IS_DEV }}
             EOF
 
-                        # Make any necessary scripts executable
-                        chmod +x scripts/*.sh
+            # Make any necessary scripts executable
+            chmod +x scripts/*.sh
 
-                        # Pull the latest images for production
-                        echo "Pulling latest live images..."
-                        docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
-                        docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
+            # Pull the latest images for production
+            echo "Pulling latest live images..."
+            docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
+            docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
 
-                        # Create an override file for the canary deployment
-                        cat <<EOF > docker-compose.override.yml
+            # Create an override file for the canary deployment
+            cat <<EOF > docker-compose.override.yml
             services:
               app-stable:
                 image: ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
@@ -171,19 +171,19 @@ jobs:
                   - sentinel-3
             EOF
 
-                        # Bring up production services (including Redis and the app variants)
-                        echo "Starting Redis services and application containers..."
-                        docker-compose --profile production up -d
+            # Bring up production services (including Redis and the app variants)
+            echo "Starting Redis services and application containers..."
+            docker-compose --profile production up -d
 
-                        # Wait for services to initialize
-                        echo "Waiting for services to be ready..."
-                        sleep 10
+            # Wait for services to initialize
+            echo "Waiting for services to be ready..."
+            sleep 10
 
-                        # Configure Nginx for canary deployment
-                        echo "Updating Nginx configuration for canary deployment..."
-                        sudo mkdir -p /etc/nginx/conf.d
+            # Configure Nginx for canary deployment
+            echo "Updating Nginx configuration for canary deployment..."
+            sudo mkdir -p /etc/nginx/conf.d
 
-                        cat <<EOF | sudo tee /etc/nginx/conf.d/nextjs-app.conf
+            cat <<EOF | sudo tee /etc/nginx/conf.d/nextjs-app.conf
             upstream nextjs_stable {
                 server 127.0.0.1:3001;
             }
@@ -214,22 +214,22 @@ jobs:
             }
             EOF
 
-                        # Ensure Nginx is installed
-                        if ! command -v nginx &> /dev/null; then
-                          echo "Nginx not found, installing..."
-                          sudo apt-get update
-                          sudo apt-get install -y nginx
-                        fi
+            # Ensure Nginx is installed
+            if ! command -v nginx &> /dev/null; then
+              echo "Nginx not found, installing..."
+              sudo apt-get update
+              sudo apt-get install -y nginx
+            fi
 
-                        # Test and reload Nginx configuration
-                        sudo nginx -t
-                        if [ $? -eq 0 ]; then
-                          echo "Reloading Nginx..."
-                          sudo systemctl reload nginx
-                        else
-                          echo "Nginx configuration error. Please check configuration."
-                          exit 1
-                        fi
+            # Test and reload Nginx configuration
+            sudo nginx -t
+            if [ $? -eq 0 ]; then
+              echo "Reloading Nginx..."
+              sudo systemctl reload nginx
+            else
+              echo "Nginx configuration error. Please check configuration."
+              exit 1
+            fi
 
-                        echo "Canary deployment completed successfully. Routing ${{ env.CANARY_WEIGHT }}% of traffic to the new version."
-                        echo "Monitor the canary deployment before promoting it to stable."
+            echo "Canary deployment completed successfully. Routing ${{ env.CANARY_WEIGHT }}% of traffic to the new version."
+            echo "Monitor the canary deployment before promoting it to stable."
