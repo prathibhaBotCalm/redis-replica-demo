@@ -4,7 +4,8 @@ networks:
 
 services:
   nextjs-app:
-    image: 'ghcr.io/${REPO}:latest'
+    build:
+      context: .
     ports:
       - '${APP_PORT}:${APP_PORT}'
     networks:

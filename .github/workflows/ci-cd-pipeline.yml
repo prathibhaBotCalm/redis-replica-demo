@@ -24,14 +24,17 @@ jobs:
   deploy-live-canary:
     needs: build
     uses: ./.github/workflows/deploy-live-canary.yml
+    secrets: inherit
     if: github.ref == 'refs/heads/main'
 
   promote-canary:
     needs: deploy-live-canary
     uses: ./.github/workflows/promote-canary.yml
+    secrets: inherit
     if: github.ref == 'refs/heads/main'
 
   rollback:
     if: failure() && github.ref == 'refs/heads/main'
     needs: deploy-live-canary
+    secrets: inherit
     uses: ./.github/workflows/rollback.yml
