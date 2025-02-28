@@ -42,13 +42,13 @@ jobs:
           repo=$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
           echo "repo=${repo}" >> $GITHUB_OUTPUT
 
-      - name: Copy docker-compose files to remote server
+      - name: Copy deploy files to remote server
         uses: appleboy/scp-action@master
         with:
           host: ${{ secrets.LIVE_HOST }}
           username: ${{ secrets.LIVE_USER }}
           key: ${{ secrets.LIVE_SSH_KEY }}
-          source: 'docker-compose.yml,.env.example'
+          source: 'docker-compose.yml,.env.example,scripts/'
           target: '/home/${{ secrets.LIVE_USER }}/app'
 
       - name: Deploy Canary Release
@@ -59,7 +59,7 @@ jobs:
           key: ${{ secrets.LIVE_SSH_KEY }}
           script: |
             set -euo pipefail
-            mkdir -p /home/${{ secrets.LIVE_USER }}/app
+            mkdir -p /home/${{ secrets.LIVE_USER }}/app/backup
             cd /home/${{ secrets.LIVE_USER }}/app
 
             # Check if Docker is installed, and install it if not
@@ -107,78 +107,19 @@ jobs:
             REDIS_SENTINELS=sentinel-1:${{ secrets.SENTINEL_1_PORT }},sentinel-2:${{ secrets.SENTINEL_2_PORT }},sentinel-3:${{ secrets.SENTINEL_3_PORT }}
             EOF
 
+            # Make scripts executable
+            chmod +x scripts/*.sh
+
             # Pull the latest image and the specific commit hash image
             echo "Pulling latest live image..."
             docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
             docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
 
-            # Check if we have stable and canary containers running
-            STABLE_RUNNING=$(docker ps -q -f name=nextjs-app-stable || true)
-            CANARY_RUNNING=$(docker ps -q -f name=nextjs-app-canary || true)
-
-            # Create or update docker-compose.override.yml for canary deployment
+            # Create an override.yml for the canary deployment
             cat <<EOF > docker-compose.override.yml
             version: '3.8'
 
             services:
-              redis-master:
-                image: redis:7.0
-                command: redis-server --requirepass ${{ secrets.REDIS_PASSWORD }}
-                ports:
-                  - "${{ secrets.REDIS_MASTER_PORT }}:6379"
-
-              redis-slave-1:
-                image: redis:7.0
-                command: redis-server --slaveof redis-master 6379 --requirepass ${{ secrets.REDIS_PASSWORD }} --masterauth ${{ secrets.REDIS_PASSWORD }}
-                ports:
-                  - "${{ secrets.REDIS_SLAVE_1_PORT }}:6379"
-                depends_on:
-                  - redis-master
-
-              redis-slave-2:
-                image: redis:7.0
-                command: redis-server --slaveof redis-master 6379 --requirepass ${{ secrets.REDIS_PASSWORD }} --masterauth ${{ secrets.REDIS_PASSWORD }}
-                ports:
-                  - "${{ secrets.REDIS_SLAVE_2_PORT }}:6379"
-                depends_on:
-                  - redis-master
-
-              sentinel-1:
-                image: redis:7.0
-                command: redis-sentinel /etc/redis/sentinel.conf
-                ports:
-                  - "${{ secrets.SENTINEL_1_PORT }}:26379"
-                depends_on:
-                  - redis-master
-                  - redis-slave-1
-                  - redis-slave-2
-                volumes:
-                  - ./sentinel-1.conf:/etc/redis/sentinel.conf
-
-              sentinel-2:
-                image: redis:7.0
-                command: redis-sentinel /etc/redis/sentinel.conf
-                ports:
-                  - "${{ secrets.SENTINEL_2_PORT }}:26379"
-                depends_on:
-                  - redis-master
-                  - redis-slave-1
-                  - redis-slave-2
-                volumes:
-                  - ./sentinel-2.conf:/etc/redis/sentinel.conf
-
-              sentinel-3:
-                image: redis:7.0
-                command: redis-sentinel /etc/redis/sentinel.conf
-                ports:
-                  - "${{ secrets.SENTINEL_3_PORT }}:26379"
-                depends_on:
-                  - redis-master
-                  - redis-slave-1
-                  - redis-slave-2
-                volumes:
-                  - ./sentinel-3.conf:/etc/redis/sentinel.conf
-
               app-stable:
                 image: ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
                 container_name: nextjs-app-stable
@@ -192,6 +133,8 @@ jobs:
                 ports:
                   - "3001:${{ secrets.APP_PORT }}"
                 restart: always
+                networks:
+                  - redis-network
                 depends_on:
                   - redis-master
                   - sentinel-1
@@ -211,6 +154,8 @@ jobs:
                 ports:
                   - "3002:${{ secrets.APP_PORT }}"
                 restart: always
+                networks:
+                  - redis-network
                 depends_on:
                   - redis-master
                   - sentinel-1
@@ -218,21 +163,9 @@ jobs:
                   - sentinel-3
             EOF
 
-            # Create sentinel configuration files
-            for i in {1..3}; do
-              cat <<EOF > sentinel-$i.conf
-            port 26379
-            sentinel monitor ${{ secrets.REDIS_MASTER_NAME }} redis-master 6379 ${{ secrets.REDIS_SENTINEL_QUORUM }}
-            sentinel auth-pass ${{ secrets.REDIS_MASTER_NAME }} ${{ secrets.REDIS_PASSWORD }}
-            sentinel down-after-milliseconds ${{ secrets.REDIS_MASTER_NAME }} 5000
-            sentinel failover-timeout ${{ secrets.REDIS_MASTER_NAME }} 60000
-            sentinel parallel-syncs ${{ secrets.REDIS_MASTER_NAME }} 1
-            EOF
-            done
-
-            # Bring up Redis services and application containers
+            # Bring up Redis services and application containers with production profile
             echo "Starting Redis services and application containers..."
-            docker-compose up -d
+            docker-compose --profile production up -d
 
             # Wait for services to be ready
             echo "Waiting for services to be ready..."
@@ -297,5 +230,3 @@ jobs:
 
             echo "Canary deployment completed successfully. Routing ${{ env.CANARY_WEIGHT }}% of traffic to the new version."
             echo "Monitor the canary deployment before promoting it to stable."
-
-      
