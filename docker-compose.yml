@@ -165,7 +165,7 @@ services:
     environment:
       GF_SECURITY_ADMIN_PASSWORD: "admin"  # Change this for production
     ports:
-      - "3001:3000"   # Map host port 3001 to container port 3000
+      - "3005:3005"   # Map host port 3005 to container port 3005
     networks:
       - monitoring-network
     restart: always
