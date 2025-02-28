@@ -1,12 +1,45 @@
 name: Rollback Canary Deployment
 on:
   workflow_call:
+    inputs:
+      rollback_reason:
+        description: 'Reason for rolling back canary deployment'
+        required: false
+        type: string
 
 jobs:
   rollback:
     runs-on: ubuntu-latest
     name: Rollback Canary Deployment
     steps:
+      - name: Verify Live Secrets
+        run: |
+          for secret in LIVE_HOST LIVE_USER LIVE_SSH_KEY APP_PORT; do
+            if [ -z "${!secret}" ]; then
+              echo "::error::Secret $secret is not set"
+              exit 1
+            fi
+          done
+        env:
+          LIVE_HOST: ${{ secrets.LIVE_HOST }}
+          LIVE_USER: ${{ secrets.LIVE_USER }}
+          LIVE_SSH_KEY: ${{ secrets.LIVE_SSH_KEY }}
+          APP_PORT: ${{ secrets.APP_PORT }}
+      
+      - name: Record rollback details
+        run: |
+          echo "Rollback triggered by: ${{ github.actor }}" >> rollback.log
+          echo "Commit SHA: ${{ github.sha }}" >> rollback.log
+          echo "Rollback reason: ${{ inputs.rollback_reason || 'Not provided' }}" >> rollback.log
+          echo "Timestamp: $(date -u)" >> rollback.log
+
+      - name: Upload rollback log
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollback-log
+          path: rollback.log
+          retention-days: 90
+
       - name: Rollback to Stable Version
         uses: appleboy/ssh-action@master
         with:
@@ -16,9 +49,15 @@ jobs:
           script: |
             set -euo pipefail
             cd /home/${{ secrets.LIVE_USER }}/app
-
+            
+            echo "Starting canary rollback process at $(date)"
+            
+            # Create a backup of the current nginx configuration
+            TIMESTAMP=$(date +%Y%m%d%H%M%S)
+            sudo cp /etc/nginx/conf.d/nextjs-app.conf /etc/nginx/conf.d/nextjs-app.conf.canary.$TIMESTAMP || true
+            
             echo "Deployment failed! Rolling back to stable version..."
-
+            
             # Update nginx configuration to direct all traffic to stable
             cat <<EOF | sudo tee /etc/nginx/conf.d/nextjs-app.conf
             upstream nextjs_app {
@@ -28,20 +67,60 @@ jobs:
             server {
                 listen 80;
                 
+                # Add header to identify which version is serving the request
+                add_header X-Version "stable-after-rollback";
+                add_header X-Rolled-Back-At "$(date -u +"%Y-%m-%dT%H:%M:%SZ")";
+                
                 location / {
                     proxy_pass http://nextjs_app;
                     proxy_set_header Host \$host;
                     proxy_set_header X-Real-IP \$remote_addr;
                     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                    proxy_set_header X-Request-ID \$request_id;
+                    
+                    # Set appropriate timeouts
+                    proxy_connect_timeout 60s;
+                    proxy_send_timeout 60s;
+                    proxy_read_timeout 60s;
+                }
+                
+                # Health check endpoint
+                location /health {
+                    access_log off;
+                    return 200 'OK';
                 }
             }
             EOF
-
-            # Reload nginx
-            sudo nginx -t && sudo systemctl reload nginx
-
+            
+            # Test nginx configuration before reloading
+            echo "Testing Nginx configuration..."
+            if ! sudo nginx -t; then
+              echo "::error::Nginx configuration test failed."
+              exit 1
+            fi
+            
+            # Reload nginx to direct all traffic to stable
+            echo "Reloading Nginx..."
+            sudo systemctl reload nginx
+            
+            # Check if stable container is running
+            if ! docker ps | grep -q nextjs-app-stable; then
+              echo "Stable container not running. Attempting to start it..."
+              docker-compose up -d app-stable
+              sleep 10
+            fi
+            
             # Clean up the canary container
+            echo "Cleaning up canary container..."
             docker-compose stop app-canary || true
             docker-compose rm -f app-canary || true
-
+            
+            # Log the rollback
+            echo "Rollback completed at $(date)" > rollback-$TIMESTAMP.log
+            echo "Rolled back from commit: ${{ github.sha }}" >> rollback-$TIMESTAMP.log
+            
             echo "Rollback completed successfully."
+            
+      - name: Notify rollback complete
+        run: |
+          echo "::warning::Canary deployment was rolled back. Please check logs for details."

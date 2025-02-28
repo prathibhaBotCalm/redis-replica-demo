@@ -36,6 +36,7 @@ jobs:
           REDIS_SENTINELS_PROD: ${{ secrets.REDIS_SENTINELS_PROD }}
           REDIS_PORT: ${{ secrets.REDIS_PORT }}
           CANARY_WEIGHT: ${{ secrets.CANARY_WEIGHT }}
+          IS_DEV: ${{ secrets.IS_DEV }}
 
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -113,6 +114,7 @@ jobs:
             CANARY_WEIGHT=${{ secrets.CANARY_WEIGHT }}
             REDIS_SENTINELS_PROD=${{ secrets.REDIS_SENTINELS_PROD }}
             REDIS_HOST_PROD=${{ secrets.REDIS_HOST_PROD }}
+            IS_DEV=${{ secrets.IS_DEV }}
             EOF
 
                         # Make any necessary scripts executable
