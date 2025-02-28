@@ -12,7 +12,7 @@ jobs:
     steps:
       - name: Verify Live Secrets
         run: |
-          for secret in LIVE_HOST LIVE_USER LIVE_SSH_KEY APP_PORT REDIS_MASTER_PORT REDIS_SLAVE_1_PORT REDIS_SLAVE_2_PORT SENTINEL_1_PORT SENTINEL_2_PORT SENTINEL_3_PORT REDIS_PASSWORD REDIS_MASTER_NAME REDIS_SENTINEL_QUORUM; do
+          for secret in LIVE_HOST LIVE_USER LIVE_SSH_KEY APP_PORT REDIS_MASTER_PORT REDIS_SLAVE_1_PORT REDIS_SLAVE_2_PORT SENTINEL_1_PORT SENTINEL_2_PORT SENTINEL_3_PORT REDIS_PASSWORD REDIS_MASTER_NAME REDIS_SENTINEL_QUORUM REDIS_HOST_PROD REDIS_SENTINELS_PROD REDIS_PORT CANARY_WEIGHT; do
             if [ -z "${!secret}" ]; then
               echo "::error::Secret $secret is not set"
               exit 1
@@ -35,7 +35,7 @@ jobs:
           REDIS_HOST_PROD: ${{ secrets.REDIS_HOST_PROD }}
           REDIS_SENTINELS_PROD: ${{ secrets.REDIS_SENTINELS_PROD }}
           REDIS_PORT: ${{ secrets.REDIS_PORT }}
-          CANARY_WEIGHT: 20
+          CANARY_WEIGHT: ${{ secrets.CANARY_WEIGHT }}
 
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -52,7 +52,7 @@ jobs:
           host: ${{ secrets.LIVE_HOST }}
           username: ${{ secrets.LIVE_USER }}
           key: ${{ secrets.LIVE_SSH_KEY }}
-          source: 'docker-compose.yml,.env.example,scripts/'
+          source: './*'
           target: '/home/${{ secrets.LIVE_USER }}/app'
 
       - name: Deploy Canary Release
@@ -113,7 +113,6 @@ jobs:
             CANARY_WEIGHT=${{ secrets.CANARY_WEIGHT }}
             REDIS_SENTINELS_PROD=${{ secrets.REDIS_SENTINELS_PROD }}
             REDIS_HOST_PROD=${{ secrets.REDIS_HOST_PROD }}
-
             EOF
 
                         # Make any necessary scripts executable
@@ -124,9 +123,8 @@ jobs:
                         docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
                         docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
 
-                        # Create an override file for the canary deployment (using Option B)
+                        # Create an override file for the canary deployment
                         cat <<EOF > docker-compose.override.yml
-            version: '3.8'
             services:
               app-stable:
                 image: ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
@@ -171,9 +169,9 @@ jobs:
                   - sentinel-3
             EOF
 
-                        # Bring up production services (including Redis and the app variants) using the production profile
+                        # Bring up production services (including Redis and the app variants)
                         echo "Starting Redis services and application containers..."
-                        docker compose --profile production up -d
+                        docker compose up -d
 
                         # Wait for services to initialize
                         echo "Waiting for services to be ready..."
