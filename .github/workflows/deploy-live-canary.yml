@@ -82,7 +82,7 @@ jobs:
             if ! command -v docker-compose &> /dev/null; then
               echo "Installing Docker Compose..."
               sudo apt-get update
-              sudo apt-get install -y docker-compose
+              sudo apt-get install -y docker-compose-plugin
             else
               echo "Docker Compose is already installed"
             fi
