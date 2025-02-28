@@ -32,6 +32,10 @@ jobs:
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
           REDIS_MASTER_NAME: ${{ secrets.REDIS_MASTER_NAME }}
           REDIS_SENTINEL_QUORUM: ${{ secrets.REDIS_SENTINEL_QUORUM }}
+          REDIS_HOST_PROD: ${{ secrets.REDIS_HOST_PROD }}
+          REDIS_SENTINELS_PROD: ${{ secrets.REDIS_SENTINELS_PROD }}
+          REDIS_PORT: ${{ secrets.REDIS_PORT }}
+          CANARY_WEIGHT: 20
 
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -59,10 +63,9 @@ jobs:
           key: ${{ secrets.LIVE_SSH_KEY }}
           script: |
             set -euo pipefail
-            mkdir -p /home/${{ secrets.LIVE_USER }}/app/backup
             cd /home/${{ secrets.LIVE_USER }}/app
 
-            # Check if Docker is installed, and install it if not
+            # Ensure Docker is installed
             if ! command -v docker &> /dev/null; then
               echo "Docker not found, installing..."
               sudo apt-get update
@@ -74,24 +77,24 @@ jobs:
               echo "Docker is already installed"
             fi
 
-            # Check if docker-compose is installed, and install it if not
-            if ! command -v docker-compose &> /dev/null; then
-              echo "docker-compose not found, installing..."
+            # Ensure Docker Compose (v2) is installed
+            if ! command -v docker compose &> /dev/null; then
+              echo "Installing Docker Compose..."
               sudo apt-get update
-              sudo apt-get install -y docker-compose
+              sudo apt-get install -y docker-compose-plugin
             else
-              echo "docker-compose is already installed"
+              echo "Docker Compose is already installed"
             fi
 
             echo "Logging into GHCR..."
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-            # Create .env file from example or update if exists
+            # Create or update .env file
             if [ ! -f .env ]; then
               cp .env.example .env
             fi
 
-            # Update environment variables for production
+            # Append production environment variables to .env
             cat <<EOF >> .env
             NODE_ENV=production
             APP_PORT=${{ secrets.APP_PORT }}
@@ -105,20 +108,25 @@ jobs:
             REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}
             REDIS_SENTINEL_QUORUM=${{ secrets.REDIS_SENTINEL_QUORUM }}
             REDIS_SENTINELS=sentinel-1:${{ secrets.SENTINEL_1_PORT }},sentinel-2:${{ secrets.SENTINEL_2_PORT }},sentinel-3:${{ secrets.SENTINEL_3_PORT }}
+            REDIS_HOST=${{ secrets.REDIS_HOST_PROD }}
+            REDIS_PORT=${{ secrets.REDIS_PORT }}
+            CANARY_WEIGHT=${{ secrets.CANARY_WEIGHT }}
+            REDIS_SENTINELS_PROD=${{ secrets.REDIS_SENTINELS_PROD }}
+            REDIS_HOST_PROD=${{ secrets.REDIS_HOST_PROD }}
+
             EOF
 
-            # Make scripts executable
-            chmod +x scripts/*.sh
+                        # Make any necessary scripts executable
+                        chmod +x scripts/*.sh
 
-            # Pull the latest image and the specific commit hash image
-            echo "Pulling latest live image..."
-            docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
-            docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
+                        # Pull the latest images for production
+                        echo "Pulling latest live images..."
+                        docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
+                        docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
 
-            # Create an override.yml for the canary deployment
-            cat <<EOF > docker-compose.override.yml
+                        # Create an override file for the canary deployment (using Option B)
+                        cat <<EOF > docker-compose.override.yml
             version: '3.8'
-
             services:
               app-stable:
                 image: ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
@@ -163,21 +171,19 @@ jobs:
                   - sentinel-3
             EOF
 
-            # Bring up Redis services and application containers with production profile
-            echo "Starting Redis services and application containers..."
-            docker-compose --profile production up -d
+                        # Bring up production services (including Redis and the app variants) using the production profile
+                        echo "Starting Redis services and application containers..."
+                        docker compose --profile production up -d
 
-            # Wait for services to be ready
-            echo "Waiting for services to be ready..."
-            sleep 10
+                        # Wait for services to initialize
+                        echo "Waiting for services to be ready..."
+                        sleep 10
 
-            # Configure Nginx for canary deployment
-            echo "Updating Nginx configuration for canary deployment..."
+                        # Configure Nginx for canary deployment
+                        echo "Updating Nginx configuration for canary deployment..."
+                        sudo mkdir -p /etc/nginx/conf.d
 
-            # Create nginx configuration for canary routing
-            sudo mkdir -p /etc/nginx/conf.d
-
-            cat <<EOF | sudo tee /etc/nginx/conf.d/nextjs-app.conf
+                        cat <<EOF | sudo tee /etc/nginx/conf.d/nextjs-app.conf
             upstream nextjs_stable {
                 server 127.0.0.1:3001;
             }
@@ -186,19 +192,18 @@ jobs:
                 server 127.0.0.1:3002;
             }
 
-            # Map to determine which upstream to use based on probability
+            # Select upstream based on request_id (rough canary weighting)
             map \$request_id \$upstream {
-                # Send ~${{ env.CANARY_WEIGHT }}% of traffic to canary
-                ~^.{0,2}[0-${{ env.CANARY_WEIGHT }}].*$    nextjs_canary;
-                default                         nextjs_stable;
+                ~^.{0,2}[0-${{ env.CANARY_WEIGHT }}].*\$    nextjs_canary;
+                default                                      nextjs_stable;
             }
 
             server {
                 listen 80;
-                
-                # Add header to identify which version is serving the request
+
+                # Add header to identify the serving version
                 add_header X-Version \$upstream;
-                
+
                 location / {
                     proxy_pass http://\$upstream;
                     proxy_set_header Host \$host;
@@ -209,24 +214,22 @@ jobs:
             }
             EOF
 
-            # Check if nginx is installed
-            if ! command -v nginx &> /dev/null; then
-                echo "Nginx not found, installing..."
-                sudo apt-get update
-                sudo apt-get install -y nginx
-            fi
+                        # Ensure Nginx is installed
+                        if ! command -v nginx &> /dev/null; then
+                          echo "Nginx not found, installing..."
+                          sudo apt-get update
+                          sudo apt-get install -y nginx
+                        fi
 
-            # Test nginx configuration
-            sudo nginx -t
+                        # Test and reload Nginx configuration
+                        sudo nginx -t
+                        if [ $? -eq 0 ]; then
+                          echo "Reloading Nginx..."
+                          sudo systemctl reload nginx
+                        else
+                          echo "Nginx configuration error. Please check configuration."
+                          exit 1
+                        fi
 
-            # Reload nginx if configuration is valid
-            if [ $? -eq 0 ]; then
-                echo "Reloading Nginx..."
-                sudo systemctl reload nginx
-            else
-                echo "Nginx configuration error detected. Please check configuration."
-                exit 1
-            fi
-
-            echo "Canary deployment completed successfully. Routing ${{ env.CANARY_WEIGHT }}% of traffic to the new version."
-            echo "Monitor the canary deployment before promoting it to stable."
+                        echo "Canary deployment completed successfully. Routing ${{ env.CANARY_WEIGHT }}% of traffic to the new version."
+                        echo "Monitor the canary deployment before promoting it to stable."
