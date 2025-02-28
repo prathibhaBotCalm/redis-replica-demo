@@ -1,3 +1,186 @@
+# name: Deploy to Staging Environment
+# on:
+#   workflow_call:
+
+# jobs:
+#   deploy-staging:
+#     runs-on: ubuntu-latest
+#     name: Deploy to Staging Environment
+#     env:
+#       # Next.js Application
+#       APP_PORT: 3000
+
+#       # External Redis Sentinel Configuration (Use Digital Ocean Public IP)
+#       REDIS_SENTINELS_DEV: 157.230.253.3:26379,157.230.253.3:26380,157.230.253.3:26381
+#       REDIS_HOST_DEV: 157.230.253.3
+#       REDIS_PORT: 6379
+
+#       # Redis Configuration
+#       REDIS_MASTER_NAME: mymaster
+#       REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+#       REDIS_SENTINEL_PASSWORD: ${{ secrets.REDIS_SENTINEL_PASSWORD }}
+#       REDIS_SENTINEL_QUORUM: 3
+
+#       # Sentinel Ports
+#       SENTINEL_1_PORT: 26379
+#       SENTINEL_2_PORT: 26380
+#       SENTINEL_3_PORT: 26381
+
+#       # Redis Ports
+#       REDIS_MASTER_PORT: 6379
+#       REDIS_SLAVE_1_PORT: 6380
+#       REDIS_SLAVE_2_PORT: 6381
+
+#       MASTER_POLL_INTERVAL_MS: 5000
+
+#       IS_DEV: true
+
+#       # Canary Deployment Settings
+#       CANARY_WEIGHT: 20
+
+#       # Staging deployment settings (passed from secrets)
+#       STAGING_HOST: ${{ secrets.STAGING_HOST }}
+#       STAGING_USER: ${{ secrets.STAGING_USER }}
+#       STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+
+#     steps:
+#       - name: Checkout Repository
+#         uses: actions/checkout@v4
+
+#       - name: Verify Staging Secrets
+#         run: |
+#           for secret in STAGING_HOST STAGING_USER STAGING_SSH_KEY; do
+#             if [ -z "${!secret}" ]; then
+#               echo "::error::Secret $secret is not set"
+#               exit 1
+#             fi
+#           done
+
+#       - name: Set repository name lower-case
+#         id: repo
+#         run: |
+#           repo=$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
+#           echo "repo=${repo}" >> $GITHUB_OUTPUT
+
+#       - name: Copy all files to remote server, excluding node_modules
+#         uses: appleboy/scp-action@master
+#         with:
+#           host: ${{ secrets.STAGING_HOST }}
+#           username: ${{ secrets.STAGING_USER }}
+#           key: ${{ secrets.STAGING_SSH_KEY }}
+#           source: './*'
+#           target: '/home/${{ secrets.STAGING_USER }}/app'
+
+#       - name: Deploy to Staging Environment
+#         uses: appleboy/ssh-action@master
+#         with:
+#           host: ${{ secrets.STAGING_HOST }}
+#           username: ${{ secrets.STAGING_USER }}
+#           key: ${{ secrets.STAGING_SSH_KEY }}
+#           script: |
+#             set -euo pipefail
+#             mkdir -p /home/${{ secrets.STAGING_USER }}/app
+#             cd /home/${{ secrets.STAGING_USER }}/app
+
+#             # Install Docker if not present
+#             if ! command -v docker &> /dev/null; then
+#               echo "Installing Docker..."
+#               sudo apt-get update
+#               sudo apt-get install -y docker.io
+#               sudo systemctl start docker
+#               sudo systemctl enable docker
+#               sudo usermod -aG docker $USER
+#             else
+#               echo "Docker is already installed"
+#             fi
+
+#             # Install Docker Compose (v2) if not present
+#             if ! command -v docker compose &> /dev/null; then
+#               echo "Installing Docker Compose..."
+#               sudo apt-get update
+#               sudo apt-get install -y docker-compose-plugin
+#             else
+#               echo "Docker Compose is already installed"
+#             fi
+
+#             # Login to GitHub Container Registry
+#             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+#             # Create or update .env file
+#             if [ ! -f .env ]; then
+#               cp .env.example .env
+#             fi
+
+#             # Append environment variables to .env
+#             cat <<EOF >> .env
+#             NODE_ENV=development
+#             PORT=${{ env.APP_PORT }}
+#             REDIS_SENTINELS_DEV=${{ env.REDIS_SENTINELS_DEV }}
+#             REDIS_HOST_DEV=${{ env.REDIS_HOST_DEV }}
+#             REDIS_PORT=${{ env.REDIS_PORT }}
+#             REDIS_MASTER_NAME=${{ env.REDIS_MASTER_NAME }}
+#             REDIS_PASSWORD=${{ env.REDIS_PASSWORD }}
+#             REDIS_SENTINEL_PASSWORD=${{ env.REDIS_SENTINEL_PASSWORD }}
+#             REDIS_SENTINEL_QUORUM=${{ env.REDIS_SENTINEL_QUORUM }}
+#             IS_DEV=${{ env.IS_DEV }}
+#             CANARY_WEIGHT=${{ env.CANARY_WEIGHT }}
+#             EOF
+
+#             # Create or update docker-compose.override.yml
+#             cat <<EOF > docker-compose.override.yml
+#             version: '3.8'
+#             services:
+#               app:
+#                 image: ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest
+#                 ports:
+#                   - "80:${{ env.APP_PORT }}"
+#                 environment:
+#                   - NODE_ENV=development
+#                   - PORT=${{ env.APP_PORT }}
+#                   - REDIS_SENTINELS_DEV=${{ env.REDIS_SENTINELS_DEV }}
+#                   - REDIS_HOST_DEV=${{ env.REDIS_HOST_DEV }}
+#                   - REDIS_PORT=${{ env.REDIS_PORT }}
+#                   - REDIS_MASTER_NAME=${{ env.REDIS_MASTER_NAME }}
+#                   - REDIS_PASSWORD=${{ env.REDIS_PASSWORD }}
+#                   - REDIS_SENTINEL_PASSWORD=${{ env.REDIS_SENTINEL_PASSWORD }}
+#                   - REDIS_SENTINEL_QUORUM=${{ env.REDIS_SENTINEL_QUORUM }}
+#                   - IS_DEV=${{ env.IS_DEV }}
+#                   - CANARY_WEIGHT=${{ env.CANARY_WEIGHT }}
+#                 restart: always
+#             EOF
+
+#             # Pull the latest image
+#             docker pull ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest
+
+#             # Tag the current image as 'previous' for rollback
+#             CURRENT_IMAGE=$(docker images ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest -q)
+#             if [ ! -z "$CURRENT_IMAGE" ]; then
+#               echo "Tagging current image as previous..."
+#               docker tag "$CURRENT_IMAGE" ghcr.io/${{ steps.repo.outputs.repo }}:previous
+#             fi
+
+#             # Stop and remove existing containers
+#             echo "Stopping existing containers..."
+#             docker compose down || true
+
+#             # Start new containers
+#             echo "Starting new containers..."
+#             docker compose up -d
+
+#             # Prune unused images
+#             echo "Pruning dangling images..."
+#             docker image prune -f
+
+#             # Remove old images except 'staging-latest' and 'previous'
+#             echo "Removing old images..."
+#             docker images ghcr.io/${{ steps.repo.outputs.repo }} --format "{{.Repository}}:{{.Tag}}" | grep -v ":staging-latest$" | grep -v ":previous$" | xargs -r docker rmi -f || true
+
+#             # Health check
+#             echo "Running health check..."
+#             curl --retry 5 --retry-delay 10 --retry-all-errors http://localhost:${{ env.APP_PORT }}/health || exit 1
+
+#             echo "Deployment to staging completed successfully."
+
 name: Deploy to Staging Environment
 on:
   workflow_call:
@@ -79,10 +262,9 @@ jobs:
           key: ${{ secrets.STAGING_SSH_KEY }}
           script: |
             set -euo pipefail
-            mkdir -p /home/${{ secrets.STAGING_USER }}/app
             cd /home/${{ secrets.STAGING_USER }}/app
 
-            # Install Docker if not present
+            # Ensure Docker is installed
             if ! command -v docker &> /dev/null; then
               echo "Installing Docker..."
               sudo apt-get update
@@ -94,7 +276,7 @@ jobs:
               echo "Docker is already installed"
             fi
 
-            # Install Docker Compose (v2) if not present
+            # Ensure Docker Compose (v2) is installed
             if ! command -v docker compose &> /dev/null; then
               echo "Installing Docker Compose..."
               sudo apt-get update
@@ -106,12 +288,11 @@ jobs:
             # Login to GitHub Container Registry
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-            # Create or update .env file
+            # Create or update .env file if not present, then append deployment variables
             if [ ! -f .env ]; then
               cp .env.example .env
             fi
 
-            # Append environment variables to .env
             cat <<EOF >> .env
             NODE_ENV=development
             PORT=${{ env.APP_PORT }}
@@ -126,7 +307,7 @@ jobs:
             CANARY_WEIGHT=${{ env.CANARY_WEIGHT }}
             EOF
 
-            # Create or update docker-compose.override.yml
+            # Create or update the override file to replace the build settings with the pre-built image
             cat <<EOF > docker-compose.override.yml
             version: '3.8'
             services:
@@ -149,34 +330,29 @@ jobs:
                 restart: always
             EOF
 
-            # Pull the latest image
+            # Pull the latest pre-built image from GHCR
             docker pull ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest
 
-            # Tag the current image as 'previous' for rollback
+            # Optionally tag the current image as "previous" for rollback (if one exists)
             CURRENT_IMAGE=$(docker images ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest -q)
             if [ ! -z "$CURRENT_IMAGE" ]; then
               echo "Tagging current image as previous..."
               docker tag "$CURRENT_IMAGE" ghcr.io/${{ steps.repo.outputs.repo }}:previous
             fi
 
-            # Stop and remove existing containers
-            echo "Stopping existing containers..."
+            # Stop and remove existing containers using the merged configuration
             docker compose down || true
 
-            # Start new containers
-            echo "Starting new containers..."
-            docker compose up -d
+            # Start containers by merging base and override configurations
+            docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
 
             # Prune unused images
-            echo "Pruning dangling images..."
             docker image prune -f
 
-            # Remove old images except 'staging-latest' and 'previous'
-            echo "Removing old images..."
+            # Remove old images except those tagged "staging-latest" or "previous"
             docker images ghcr.io/${{ steps.repo.outputs.repo }} --format "{{.Repository}}:{{.Tag}}" | grep -v ":staging-latest$" | grep -v ":previous$" | xargs -r docker rmi -f || true
 
-            # Health check
-            echo "Running health check..."
+            # Health check: retry until the app responds on the expected port
             curl --retry 5 --retry-delay 10 --retry-all-errors http://localhost:${{ env.APP_PORT }}/health || exit 1
 
             echo "Deployment to staging completed successfully."

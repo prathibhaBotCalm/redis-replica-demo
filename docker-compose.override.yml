@@ -1,5 +1,18 @@
-# docker-compose.override.yml (local dev only)
 services:
-  nextjs-app:
-    build:
-      context: .
+  app:
+    image: ghcr.io/${{ steps.repo.outputs.repo }}:staging-latest
+    ports:
+      - "80:${{ env.APP_PORT }}"
+    environment:
+      - NODE_ENV=development
+      - PORT=${{ env.APP_PORT }}
+      - REDIS_SENTINELS_DEV=${{ env.REDIS_SENTINELS_DEV }}
+      - REDIS_HOST_DEV=${{ env.REDIS_HOST_DEV }}
+      - REDIS_PORT=${{ env.REDIS_PORT }}
+      - REDIS_MASTER_NAME=${{ env.REDIS_MASTER_NAME }}
+      - REDIS_PASSWORD=${{ env.REDIS_PASSWORD }}
+      - REDIS_SENTINEL_PASSWORD=${{ env.REDIS_SENTINEL_PASSWORD }}
+      - REDIS_SENTINEL_QUORUM=${{ env.REDIS_SENTINEL_QUORUM }}
+      - IS_DEV=${{ env.IS_DEV }}
+      - CANARY_WEIGHT=${{ env.CANARY_WEIGHT }}
+    restart: always

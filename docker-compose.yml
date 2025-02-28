@@ -5,7 +5,7 @@ networks:
     driver: bridge
 
 services:
-  nextjs-app:
+  app:
     build:
       context: .
     ports:
