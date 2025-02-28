@@ -29,8 +29,8 @@ services:
       - ./backup:/backup
       - ./scripts/init-master.sh:/scripts/init-master.sh:ro
     healthcheck:
-      test:
-        ['CMD', 'bash', '-c', 'redis-cli -a $${REDIS_PASSWORD} ping | grep PONG']
+      test: 
+        ['CMD', 'bash', '-c', 'redis-cli -a ${REDIS_PASSWORD} ping | grep PONG']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -146,8 +146,7 @@ services:
     entrypoint: ['/bin/sh', '/scripts/backup.sh']
     profiles:
       - production
-    # Add cron for scheduling backups
-    command: ['/bin/sh', '-c', 'apk add --no-cache dcron && echo "0 0 * * * /scripts/backup.sh" | crontab - && crond -f']
+    
 
   # --- Monitoring Services ---
   redis-exporter:

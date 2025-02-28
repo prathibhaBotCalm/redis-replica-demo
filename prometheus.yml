@@ -1,20 +1,91 @@
 global:
-  scrape_interval: 15s  # How frequently to scrape targets
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093
+
+# Load rules once and periodically evaluate them
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
 
 scrape_configs:
-  - job_name: 'prometheus'
+  - job_name: "prometheus"
     static_configs:
-      - targets: ['prometheus:9090']
+      - targets: ["localhost:9090"]
 
-  - job_name: 'nextjs-app'
-    metrics_path: /api/metrics
+  - job_name: "redis-master"
     static_configs:
-      - targets: ['app:3000']
+      - targets: ["redis-exporter:9121"]
+        labels:
+          instance: "redis-master"
+          role: "master"
 
-  # Optional: Scrape Grafana's internal metrics.
-  # Grafana exposes metrics on /metrics and listens on port 3000 inside the container.
-  # Uncomment the block below if you have enabled Grafana metrics.
-  - job_name: 'grafana'
-    metrics_path: /metrics
+  # App metrics - assuming your app exposes metrics on /metrics
+  - job_name: "app"
     static_configs:
-      - targets: ['grafana:3005']
+      - targets: ["app:${APP_PORT}"]
+        labels:
+          instance: "application"
+
+  # Node exporter for host metrics (optional - if you add this service)
+  # - job_name: "node"
+  #   static_configs:
+  #     - targets: ["node-exporter:9100"]
+
+  # Redis slaves metrics through redis_exporter
+  - job_name: "redis-slave-1"
+    metrics_path: /scrape
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels:
+          instance: "redis-slave-1"
+          role: "slave"
+    params:
+      target: ["redis-slave-1:6379"]
+
+  - job_name: "redis-slave-2"
+    metrics_path: /scrape
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels:
+          instance: "redis-slave-2"
+          role: "slave"
+    params:
+      target: ["redis-slave-2:6379"]
+
+  # Redis sentinels
+  - job_name: "sentinel-1"
+    metrics_path: /scrape
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels:
+          instance: "sentinel-1"
+          role: "sentinel"
+    params:
+      target: ["sentinel-1:26379"]
+
+  - job_name: "sentinel-2"
+    metrics_path: /scrape
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels:
+          instance: "sentinel-2"
+          role: "sentinel"
+    params:
+      target: ["sentinel-2:26379"]
+
+  - job_name: "sentinel-3"
+    metrics_path: /scrape
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels:
+          instance: "sentinel-3"
+          role: "sentinel"
+    params:
+      target: ["sentinel-3:26379"]

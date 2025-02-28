@@ -1,6 +1,6 @@
 
 services:
-  nextjs-app:
+  app:
     deploy:
       resources:
         limits:
