@@ -195,8 +195,6 @@ on:
         required: true
       STAGING_SSH_KEY:
         required: true
-      GITHUB_TOKEN:
-        required: true
       REDIS_PASSWORD:
         required: true
       REDIS_SENTINEL_PASSWORD:
