@@ -30,14 +30,6 @@ resource "digitalocean_droplet" "app" {
   ssh_keys = [digitalocean_ssh_key.default.fingerprint]
   tags     = var.tags
 
-  # User data installs Docker and Docker Compose on first boot.
-  user_data = <<-EOF
-    #!/bin/bash
-    apt-get update -y
-    apt-get install -y docker.io docker-compose
-    systemctl start docker
-    systemctl enable docker
-  EOF
 }
 
 #############################
