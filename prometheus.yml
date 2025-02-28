@@ -8,6 +8,6 @@ scrape_configs:
 
   # If your application exposes metrics (for example, via an endpoint like /metrics)
   # uncomment and adjust the following:
-  - job_name: 'nextjs-app'
-    static_configs:
-      - targets: ['nextjs-app:${APP_PORT}']  # Replace PORT with the actual port number
+  # - job_name: 'app'
+  #   static_configs:
+  #     - targets: ['app:${APP_PORT}']  # Replace PORT with the actual port number
