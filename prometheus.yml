@@ -6,8 +6,15 @@ scrape_configs:
     static_configs:
       - targets: ['prometheus:9090']
 
-  # If your application exposes metrics (for example, via an endpoint like /metrics)
-  # uncomment and adjust the following:
-  # - job_name: 'app'
+  - job_name: 'nextjs-app'
+    metrics_path: /api/metrics
+    static_configs:
+      - targets: ['app:3000']
+
+  # Optional: Scrape Grafana's internal metrics.
+  # Grafana exposes metrics on /metrics and listens on port 3000 inside the container.
+  # Uncomment the block below if you have enabled Grafana metrics.
+  # - job_name: 'grafana'
+  #   metrics_path: /metrics
   #   static_configs:
-  #     - targets: ['app:${APP_PORT}']  # Replace PORT with the actual port number
+  #     - targets: ['grafana:3000']
