@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 15s  # How frequently to scrape targets
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['prometheus:9090']
+
+  # If your application exposes metrics (for example, via an endpoint like /metrics)
+  # uncomment and adjust the following:
+  - job_name: 'nextjs-app'
+    static_configs:
+      - targets: ['nextjs-app:${APP_PORT}']  # Replace PORT with the actual port number
