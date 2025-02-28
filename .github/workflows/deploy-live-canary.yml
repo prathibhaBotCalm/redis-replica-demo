@@ -77,11 +77,11 @@ jobs:
               echo "Docker is already installed"
             fi
 
-            # Ensure Docker Compose (v2) is installed
-            if ! command -v docker compose &> /dev/null; then
+            # Ensure Docker Compose is installed (legacy command)
+            if ! command -v docker-compose &> /dev/null; then
               echo "Installing Docker Compose..."
               sudo apt-get update
-              sudo apt-get install -y docker-compose-plugin
+              sudo apt-get install -y docker-compose
             else
               echo "Docker Compose is already installed"
             fi
@@ -171,7 +171,7 @@ jobs:
 
                         # Bring up production services (including Redis and the app variants)
                         echo "Starting Redis services and application containers..."
-                        docker compose up -d
+                        docker-compose up -d
 
                         # Wait for services to initialize
                         echo "Waiting for services to be ready..."
