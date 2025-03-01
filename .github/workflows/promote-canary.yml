@@ -136,20 +136,27 @@ jobs:
             
             # Update stable container with the promoted image
             echo "Updating stable container..."
-            docker-compose stop app-stable
+            docker-compose --profile production stop app-stable
             docker-compose rm -f app-stable
-            docker-compose up -d app-stable
+            docker-compose --profile production up -d app-stable
             
             # Wait for the stable container to become healthy
             echo "Waiting for stable container to initialize..."
-            sleep 10
+            sleep 15
             
             # Verify the container is running
-            if ! docker ps | grep -q nextjs-app-stable; then
+            if ! docker ps | grep -q app-stable; then
               echo "::error::Stable container failed to start. Rolling back..."
-              docker-compose stop app-stable
               docker tag ghcr.io/${{ steps.repo.outputs.repo }}:live-backup-$TIMESTAMP ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
-              docker-compose up -d app-stable
+              docker-compose --profile production up -d app-stable
+              exit 1
+            fi
+
+            # Test the application before updating Nginx
+            if ! curl -sf http://localhost:3001/health > /dev/null; then
+              echo "::error::Stable container failed health check. Rolling back..."
+              docker tag ghcr.io/${{ steps.repo.outputs.repo }}:live-backup-$TIMESTAMP ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
+              docker-compose --profile production up -d app-stable
               exit 1
             fi
             
