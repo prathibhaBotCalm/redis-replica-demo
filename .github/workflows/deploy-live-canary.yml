@@ -78,10 +78,10 @@ jobs:
               echo "Docker is already installed"
             fi
 
-            # Ensure Docker Compose is installed (legacy command)
+            # Ensure Docker Compose is installed
             if ! command -v docker-compose &> /dev/null; then
               echo "Installing Docker Compose..."
-              sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+              sudo curl -L "https://github.com/docker/compose/releases/download/v2.23.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
               sudo chmod +x /usr/local/bin/docker-compose
             else
               echo "Docker Compose is already installed"
@@ -171,6 +171,10 @@ jobs:
                   - sentinel-3
             EOF
 
+            # Validate Docker Compose configuration
+            echo "Validating Docker Compose configuration..."
+            docker-compose config
+
             # Bring up production services (including Redis and the app variants)
             echo "Starting Redis services and application containers..."
             docker-compose --profile production up -d
@@ -182,17 +186,10 @@ jobs:
             # Ensure Nginx is installed before trying to configure it
             if ! command -v nginx &> /dev/null; then
               echo "Nginx not found, installing..."
-              # First, check if nginx is in conflict or something's running on port 80
               sudo lsof -i :80 || true
-              
-              # Stop any existing nginx service first
               sudo systemctl stop nginx || true
-              
-              # Install nginx
               sudo apt-get update
               sudo apt-get install -y nginx
-              
-              # Make sure nginx doesn't start automatically after install
               sudo systemctl stop nginx
             fi
 
@@ -248,8 +245,6 @@ jobs:
             if [ $? -eq 0 ]; then
               echo "Nginx configuration test passed. Starting/reloading Nginx..."
               sudo systemctl restart nginx || sudo systemctl start nginx
-              
-              # Verify Nginx is running
               sleep 3
               sudo systemctl status nginx
             else
