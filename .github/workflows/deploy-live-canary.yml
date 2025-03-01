@@ -393,6 +393,14 @@ jobs:
             docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
             docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
 
+            # Create the redis-network if it doesn't exist
+            if ! docker network inspect redis-network &> /dev/null; then
+              echo "Creating redis-network..."
+              docker network create redis-network
+            else
+              echo "redis-network already exists"
+            fi
+
             # Create a dedicated compose file for canary deployment instead of an override
             cat <<EOF > docker-compose.canary.yml
             version: '3.8'
