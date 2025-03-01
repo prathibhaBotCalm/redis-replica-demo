@@ -1,198 +1,3 @@
-# name: Promote Canary to Stable (Manual Approval)
-# on:
-#   workflow_call:
-#     inputs:
-#       promotion_reason:
-#         description: 'Reason for promoting canary to stable'
-#         required: false
-#         type: string
-    
-# jobs:
-#   promote-canary:
-#     runs-on: ubuntu-latest
-#     name: Promote Canary to Stable
-#     env:
-#       NODE_ENV: production
-#     steps:
-#       - name: Verify Live Secrets
-#         run: |
-#           for secret in LIVE_HOST LIVE_USER LIVE_SSH_KEY APP_PORT GITHUB_TOKEN; do
-#             if [ -z "${!secret}" ]; then
-#               echo "::error::Secret $secret is not set"
-#               exit 1
-#             fi
-#           done
-#         env:
-#           LIVE_HOST: ${{ secrets.LIVE_HOST }}
-#           LIVE_USER: ${{ secrets.LIVE_USER }}
-#           LIVE_SSH_KEY: ${{ secrets.LIVE_SSH_KEY }}
-#           APP_PORT: ${{ secrets.APP_PORT }}
-#           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-#       - name: Get repository name
-#         id: repo
-#         run: |
-#           repo=$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
-#           echo "repo=${repo}" >> $GITHUB_OUTPUT
-          
-#       - name: Record deployment details
-#         run: |
-#           echo "Promotion triggered by: ${{ github.actor }}" >> promotion.log
-#           echo "Commit SHA: ${{ github.sha }}" >> promotion.log
-#           echo "Promotion reason: ${{ inputs.promotion_reason || 'Not provided' }}" >> promotion.log
-#           echo "Timestamp: $(date -u)" >> promotion.log
-
-#       - name: Upload promotion log
-#         uses: actions/upload-artifact@v4
-#         with:
-#           name: promotion-log
-#           path: promotion.log
-#           retention-days: 90
-
-#       - name: Promote Canary to Stable
-#         uses: appleboy/ssh-action@master
-#         with:
-#           host: ${{ secrets.LIVE_HOST }}
-#           username: ${{ secrets.LIVE_USER }}
-#           key: ${{ secrets.LIVE_SSH_KEY }}
-#           script: |
-#             set -euo pipefail
-#             cd /home/${{ secrets.LIVE_USER }}/app
-            
-#             echo "Starting canary promotion process at $(date)"
-            
-#             # Check if we can reach Docker 
-#             if ! docker ps > /dev/null 2>&1; then
-#               echo "::error::Cannot connect to Docker daemon. Ensure Docker is running."
-#               exit 1
-#             fi
-            
-#             # Check if we can log in to GitHub Container Registry
-#             echo "Logging into GHCR..."
-#             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-            
-#             # Create backup of current stable image tag
-#             TIMESTAMP=$(date +%Y%m%d%H%M%S)
-#             echo "Creating backup of current stable image as ghcr.io/${{ steps.repo.outputs.repo }}:live-backup-$TIMESTAMP"
-#             docker tag ghcr.io/${{ steps.repo.outputs.repo }}:live-latest ghcr.io/${{ steps.repo.outputs.repo }}:live-backup-$TIMESTAMP
-#             docker push ghcr.io/${{ steps.repo.outputs.repo }}:live-backup-$TIMESTAMP
-            
-#             echo "Promoting canary deployment to stable..."
-            
-#             # Tag the canary image as the new stable
-#             docker tag ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }} ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
-#             docker push ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
-            
-#             # Create a backup of the current nginx configuration
-#             sudo cp /etc/nginx/conf.d/nextjs-app.conf /etc/nginx/conf.d/nextjs-app.conf.bak.$TIMESTAMP
-            
-#             # Update nginx configuration to direct all traffic to the promoted stable
-#             cat <<EOF | sudo tee /etc/nginx/conf.d/nextjs-app.conf
-#             upstream nextjs_app {
-#                 server 127.0.0.1:3001;
-#             }
-
-#             server {
-#                 listen 80;
-                
-#                 # Add header to identify which version is serving the request
-#                 add_header X-Version stable;
-#                 add_header X-Deployed-At "$(date -u +"%Y-%m-%dT%H:%M:%SZ")";
-#                 add_header X-Commit-SHA "${{ github.sha }}";
-                
-#                 location / {
-#                     proxy_pass http://nextjs_app;
-#                     proxy_set_header Host \$host;
-#                     proxy_set_header X-Real-IP \$remote_addr;
-#                     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-#                     proxy_set_header X-Request-ID \$request_id;
-                    
-#                     # Set appropriate timeouts
-#                     proxy_connect_timeout 60s;
-#                     proxy_send_timeout 60s;
-#                     proxy_read_timeout 60s;
-#                 }
-                
-#                 # Health check endpoint
-#                 location /health {
-#                     access_log off;
-#                     return 200 'OK';
-#                 }
-#             }
-#             EOF
-            
-#             # Test nginx configuration before reloading
-#             echo "Testing Nginx configuration..."
-#             if ! sudo nginx -t; then
-#               echo "::error::Nginx configuration test failed. Restoring previous configuration."
-#               sudo cp /etc/nginx/conf.d/nextjs-app.conf.bak.$TIMESTAMP /etc/nginx/conf.d/nextjs-app.conf
-#               sudo systemctl reload nginx
-#               exit 1
-#             fi
-            
-#             # Reload nginx
-#             echo "Reloading Nginx..."
-#             sudo systemctl reload nginx
-            
-#             # Debug: Verify Docker Compose file exists and contains sentinel-1 service
-#             echo "Verifying Docker Compose file..."
-#             if [ ! -f docker-compose.yml ]; then
-#               echo "::error::docker-compose.yml file not found in the current directory."
-#               exit 1
-#             fi
-#             echo "Contents of docker-compose.yml:"
-#             cat docker-compose.yml
-            
-#             # Update stable container with the promoted image
-#             echo "Updating stable container..."
-#             docker-compose --profile production stop app-stable
-#             docker-compose --profile production rm -f app-stable
-#             docker-compose --profile production up -d app-stable
-            
-#             # Wait for the stable container to initialize
-#             echo "Waiting for stable container to initialize..."
-#             sleep 10
-            
-#             # Fetch and display container logs for debugging
-#             echo "Fetching logs for app-app-stable-1..."
-#             docker logs app-app-stable-1 || true
-            
-#             # Verify the container is running
-#             if ! docker ps | grep -q app-app-stable-1; then
-#               echo "::error::Stable container failed to start. Rolling back..."
-              
-#               # Fetch logs again before rolling back
-#               echo "Fetching logs for app-app-stable-1 before rollback..."
-#               docker logs app-app-stable-1 || true
-              
-#               # Roll back to the previous stable image
-#               docker-compose --profile production stop app-stable
-#               docker tag ghcr.io/${{ steps.repo.outputs.repo }}:live-backup-$TIMESTAMP ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
-#               docker-compose --profile production up -d app-stable
-              
-#               # Verify rollback
-#               if docker ps | grep -q app-app-stable-1; then
-#                 echo "Rollback successful. Previous stable version is now running."
-#               else
-#                 echo "::error::Rollback failed. Manual intervention required."
-#                 exit 1
-#               fi
-#               exit 1
-#             fi
-            
-#             # Clean up the canary container after successful promotion
-#             echo "Cleaning up canary container..."
-#             docker-compose --profile production stop app-canary
-#             docker-compose --profile production rm -f app-canary
-            
-#             # Prune unused images to save space
-#             echo "Pruning unused images..."
-#             docker image prune -af --filter "until=24h"
-            
-#             echo "Canary deployment successfully promoted to stable at $(date)."
-#             echo "New stable version: ${{ github.sha }}"
-#             echo "Backup image available as: ghcr.io/${{ steps.repo.outputs.repo }}:live-backup-$TIMESTAMP"
-
 name: Promote Canary to Stable (Manual Approval)
 on:
   workflow_call:
@@ -201,7 +6,7 @@ on:
         description: 'Reason for promoting canary to stable'
         required: false
         type: string
-    
+
 jobs:
   promote-canary:
     runs-on: ubuntu-latest
@@ -229,7 +34,7 @@ jobs:
         run: |
           repo=$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
           echo "repo=${repo}" >> $GITHUB_OUTPUT
-          
+
       - name: Record deployment details
         run: |
           echo "Promotion triggered by: ${{ github.actor }}" >> promotion.log
@@ -253,46 +58,46 @@ jobs:
           script: |
             set -euo pipefail
             cd /home/${{ secrets.LIVE_USER }}/app
-            
+
             echo "Starting canary promotion process at $(date)"
-            
+
             # Check if we can reach Docker 
             if ! docker ps > /dev/null 2>&1; then
               echo "::error::Cannot connect to Docker daemon. Ensure Docker is running."
               exit 1
             fi
-            
+
             # Check if we can log in to GitHub Container Registry
             echo "Logging into GHCR..."
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-            
+
             # Create backup of current stable image tag
             TIMESTAMP=$(date +%Y%m%d%H%M%S)
             echo "Creating backup of current stable image as ghcr.io/${{ steps.repo.outputs.repo }}:live-backup-$TIMESTAMP"
             docker tag ghcr.io/${{ steps.repo.outputs.repo }}:live-latest ghcr.io/${{ steps.repo.outputs.repo }}:live-backup-$TIMESTAMP
             docker push ghcr.io/${{ steps.repo.outputs.repo }}:live-backup-$TIMESTAMP
-            
+
             echo "Promoting canary deployment to stable..."
-            
+
             # Tag the canary image as the new stable
             docker tag ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }} ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
             docker push ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
-            
+
             # Create a backup of the current nginx configuration
             sudo cp /etc/nginx/conf.d/nextjs-app.conf /etc/nginx/conf.d/nextjs-app.conf.bak.$TIMESTAMP
-            
+
             # Update stable container with the promoted image
             echo "Stopping stable container..."
             docker-compose --profile production stop app-stable || true
             docker-compose --profile production rm -f app-stable || true
-            
+
             echo "Starting new stable container..."
             docker-compose --profile production up -d app-stable
-            
+
             # Wait for the stable container to initialize
             echo "Waiting for stable container to initialize..."
             sleep 10
-            
+
             # Verify the container is running and get its container ID
             CONTAINER_ID=$(docker ps --filter "name=app-app-stable" --format "{{.ID}}")
             if [ -z "$CONTAINER_ID" ]; then
@@ -300,9 +105,9 @@ jobs:
               docker ps
               exit 1
             fi
-            
+
             echo "Container ID: $CONTAINER_ID"
-            
+
             # Update nginx configuration to direct all traffic to the stable version
             cat <<EOF | sudo tee /etc/nginx/conf.d/nextjs-app.conf
             upstream nextjs_app {
@@ -338,19 +143,19 @@ jobs:
                 }
             }
             EOF
-            
+
             # Ensure no default configuration exists that might override our setup
             if [ -f /etc/nginx/sites-enabled/default ]; then
               echo "Removing default Nginx site configuration..."
               sudo rm /etc/nginx/sites-enabled/default
             fi
-            
+
             # Remove any backup files that might cause conflicts
             if [ -f /etc/nginx/sites-enabled/default.bak ]; then
               echo "Removing conflicting Nginx backup configuration..."
               sudo rm /etc/nginx/sites-enabled/default.bak
             fi
-            
+
             # Test nginx configuration before reloading
             echo "Testing Nginx configuration..."
             if ! sudo nginx -t; then
@@ -359,11 +164,11 @@ jobs:
               sudo systemctl reload nginx
               exit 1
             fi
-            
+
             # Reload nginx
             echo "Reloading Nginx..."
             sudo systemctl reload nginx
-            
+
             # Check if nginx is running
             if ! sudo systemctl is-active nginx; then
               echo "::error::Nginx is not running. Attempting to start..."
@@ -375,18 +180,18 @@ jobs:
                 exit 1
               fi
             fi
-            
+
             # Verify if nginx has the correct configuration loaded
             echo "Checking Nginx process and configuration..."
             sudo ps aux | grep nginx
-            
+
             # Verify if app-stable is listening on the expected port
             echo "Checking if app-stable is accessible on port 3001..."
             if ! curl -s http://localhost:3001/health; then
               echo "::warning::Cannot access app-stable directly. Checking Docker logs..."
               docker logs $CONTAINER_ID
             fi
-            
+
             # Verify if the app is accessible through Nginx
             echo "Checking if the app is accessible through Nginx on port 80..."
             if ! curl -s http://localhost/health; then
@@ -414,16 +219,16 @@ jobs:
             else
               echo "App is successfully accessible through Nginx on port 80."
             fi
-            
+
             # Clean up the canary container after successful promotion
             echo "Cleaning up canary container..."
             docker-compose --profile production stop app-canary || true
             docker-compose --profile production rm -f app-canary || true
-            
+
             # Prune unused images to save space
             echo "Pruning unused images..."
             docker image prune -af --filter "until=24h"
-            
+
             echo "Canary deployment successfully promoted to stable at $(date)."
             echo "New stable version: ${{ github.sha }}"
             echo "Backup image available as: ghcr.io/${{ steps.repo.outputs.repo }}:live-backup-$TIMESTAMP"
