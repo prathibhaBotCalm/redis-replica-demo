@@ -209,7 +209,6 @@ jobs:
             timeout 5 curl -s http://localhost:3002 || echo "Port 3002 not responding yet"
 
             # Create the Nginx configuration file
-
             cat <<EOF | sudo tee /etc/nginx/conf.d/nextjs-app.conf
             upstream nextjs_stable {
                 server 127.0.0.1:3001;
@@ -219,10 +218,10 @@ jobs:
                 server 127.0.0.1:3002;
             }
 
-            # Select upstream based on request_id (rough canary weighting)
-            map $request_id $upstream {
-                ~^.{0,2}[0-${{ env.CANARY_WEIGHT }}].*\\$    nextjs_canary;
-                default                                      nextjs_stable;
+            # Split traffic between stable and canary based on a random number
+            split_clients "${remote_addr}${time_iso8601}" $upstream {
+                ${env.CANARY_WEIGHT}%   nextjs_canary;
+                *                       nextjs_stable;
             }
 
             server {
@@ -236,7 +235,6 @@ jobs:
                     proxy_set_header Host $host;
                     proxy_set_header X-Real-IP $remote_addr;
                     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                    proxy_set_header X-Request-ID $request_id;
                 }
             }
             EOF
