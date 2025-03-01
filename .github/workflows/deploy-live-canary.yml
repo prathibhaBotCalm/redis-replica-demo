@@ -146,11 +146,6 @@ jobs:
                 restart: always
                 networks:
                   - redis-network
-                depends_on:
-                  - redis-master
-                  - sentinel-1
-                  - sentinel-2
-                  - sentinel-3
 
               app-canary:
                 image: ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
@@ -166,11 +161,7 @@ jobs:
                 restart: always
                 networks:
                   - redis-network
-                depends_on:
-                  - redis-master
-                  - sentinel-1
-                  - sentinel-2
-                  - sentinel-3
+                
 
             volumes:
               redis-data:
