@@ -240,15 +240,14 @@ jobs:
             }
             EOF
 
-            # Backup the default nginx site configuration
-            sudo mv /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/default.bak || true
+            # Backup the default nginx site configuration (if it exists)
+            if [ -f /etc/nginx/sites-enabled/default ]; then
+              sudo mv /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/default.bak
+            fi
 
             # Test Nginx configuration
             echo "Testing Nginx configuration..."
-            sudo nginx -t
-
-            # If test passes, reload or start Nginx
-            if [ $? -eq 0 ]; then
+            if sudo nginx -t; then
               echo "Nginx configuration test passed. Starting/reloading Nginx..."
               sudo systemctl restart nginx || sudo systemctl start nginx
               sleep 3
