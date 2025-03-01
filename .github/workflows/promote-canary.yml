@@ -134,11 +134,20 @@ jobs:
             echo "Reloading Nginx..."
             sudo systemctl reload nginx
             
+            # Debug: Verify Docker Compose file exists and contains sentinel-1 service
+            echo "Verifying Docker Compose file..."
+            if [ ! -f docker-compose.yml ]; then
+              echo "::error::docker-compose.yml file not found in the current directory."
+              exit 1
+            fi
+            echo "Contents of docker-compose.yml:"
+            cat docker-compose.yml
+            
             # Update stable container with the promoted image
             echo "Updating stable container..."
-            docker-compose stop app-stable
-            docker-compose rm -f app-stable
-            docker-compose up -d app-stable
+            docker-compose --profile production stop app-stable
+            docker-compose --profile production rm -f app-stable
+            docker-compose --profile production up -d app-stable
             
             # Wait for the stable container to become healthy
             echo "Waiting for stable container to initialize..."
@@ -147,16 +156,16 @@ jobs:
             # Verify the container is running
             if ! docker ps | grep -q nextjs-app-stable; then
               echo "::error::Stable container failed to start. Rolling back..."
-              docker-compose stop app-stable
+              docker-compose --profile production stop app-stable
               docker tag ghcr.io/${{ steps.repo.outputs.repo }}:live-backup-$TIMESTAMP ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
-              docker-compose up -d app-stable
+              docker-compose --profile production up -d app-stable
               exit 1
             fi
             
             # Clean up the canary container after successful promotion
             echo "Cleaning up canary container..."
-            docker-compose stop app-canary
-            docker-compose rm -f app-canary
+            docker-compose --profile production stop app-canary
+            docker-compose --profile production rm -f app-canary
             
             # Prune unused images to save space
             echo "Pruning unused images..."
@@ -165,7 +174,3 @@ jobs:
             echo "Canary deployment successfully promoted to stable at $(date)."
             echo "New stable version: ${{ github.sha }}"
             echo "Backup image available as: ghcr.io/${{ steps.repo.outputs.repo }}:live-backup-$TIMESTAMP"
-
-      - name: Create Deployment Record
-        run: |
-          echo "::notice::Successfully promoted canary to stable. Commit: ${{ github.sha }}"
