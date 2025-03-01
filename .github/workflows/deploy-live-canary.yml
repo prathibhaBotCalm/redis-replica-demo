@@ -219,8 +219,8 @@ jobs:
             }
 
             # Split traffic between stable and canary based on a random number
-            split_clients "${remote_addr}${time_iso8601}" $upstream {
-                ${env.CANARY_WEIGHT}%   nextjs_canary;
+            split_clients "\${remote_addr}\${time_iso8601}" \$upstream {
+                $CANARY_WEIGHT%   nextjs_canary;
                 *                       nextjs_stable;
             }
 
