@@ -179,10 +179,33 @@ jobs:
             echo "Waiting for services to be ready..."
             sleep 10
 
+            # Ensure Nginx is installed before trying to configure it
+            if ! command -v nginx &> /dev/null; then
+              echo "Nginx not found, installing..."
+              # First, check if nginx is in conflict or something's running on port 80
+              sudo lsof -i :80 || true
+              
+              # Stop any existing nginx service first
+              sudo systemctl stop nginx || true
+              
+              # Install nginx
+              sudo apt-get update
+              sudo apt-get install -y nginx
+              
+              # Make sure nginx doesn't start automatically after install
+              sudo systemctl stop nginx
+            fi
+
             # Configure Nginx for canary deployment
             echo "Updating Nginx configuration for canary deployment..."
             sudo mkdir -p /etc/nginx/conf.d
 
+            # First verify if ports 3001 and 3002 are accessible
+            echo "Verifying ports 3001 and 3002 are accessible..."
+            timeout 5 curl -s http://localhost:3001 || echo "Port 3001 not responding yet"
+            timeout 5 curl -s http://localhost:3002 || echo "Port 3002 not responding yet"
+
+            # Create the Nginx configuration file
             cat <<EOF | sudo tee /etc/nginx/conf.d/nextjs-app.conf
             upstream nextjs_stable {
                 server 127.0.0.1:3001;
@@ -214,20 +237,24 @@ jobs:
             }
             EOF
 
-            # Ensure Nginx is installed
-            if ! command -v nginx &> /dev/null; then
-              echo "Nginx not found, installing..."
-              sudo apt-get update
-              sudo apt-get install -y nginx
-            fi
+            # Backup the default nginx site configuration
+            sudo mv /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/default.bak || true
 
-            # Test and reload Nginx configuration
+            # Test Nginx configuration
+            echo "Testing Nginx configuration..."
             sudo nginx -t
+
+            # If test passes, reload or start Nginx
             if [ $? -eq 0 ]; then
-              echo "Reloading Nginx..."
-              sudo systemctl reload nginx
+              echo "Nginx configuration test passed. Starting/reloading Nginx..."
+              sudo systemctl restart nginx || sudo systemctl start nginx
+              
+              # Verify Nginx is running
+              sleep 3
+              sudo systemctl status nginx
             else
-              echo "Nginx configuration error. Please check configuration."
+              echo "Nginx configuration failed. Checking for errors..."
+              sudo cat /var/log/nginx/error.log
               exit 1
             fi
 
