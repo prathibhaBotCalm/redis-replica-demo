@@ -342,10 +342,10 @@ jobs:
               echo "Docker is already installed"
             fi
 
-            # Ensure Docker Compose is installed (legacy command)
+            # Ensure Docker Compose is installed (latest version)
             if ! command -v docker-compose &> /dev/null; then
               echo "Installing Docker Compose..."
-              sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+              sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
               sudo chmod +x /usr/local/bin/docker-compose
             else
               echo "Docker Compose is already installed"
@@ -393,55 +393,10 @@ jobs:
             docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
             docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
 
-            # Create the redis-network if it doesn't exist
-            if ! docker network inspect redis-network &> /dev/null; then
-              echo "Creating redis-network..."
-              docker network create redis-network
-            else
-              echo "redis-network already exists"
-            fi
-
-            # Create a dedicated compose file for canary deployment instead of an override
-            cat <<EOF > docker-compose.canary.yml
-            version: '3.8'
-            
-            networks:
-              redis-network:
-                external: true
-            
-            services:
-              app-stable:
-                image: ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
-                container_name: nextjs-app-stable
-                environment:
-                  - NODE_ENV=production
-                  - APP_PORT=${{ secrets.APP_PORT }}
-                  - REDIS_SENTINELS=sentinel-1:${{ secrets.SENTINEL_1_PORT }},sentinel-2:${{ secrets.SENTINEL_2_PORT }},sentinel-3:${{ secrets.SENTINEL_3_PORT }}
-                  - REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}
-                  - REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
-                  - REDIS_SENTINEL_QUORUM=${{ secrets.REDIS_SENTINEL_QUORUM }}
-                ports:
-                  - "3001:${{ secrets.APP_PORT }}"
-                restart: always
-                networks:
-                  - redis-network
-            
-              app-canary:
-                image: ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
-                container_name: nextjs-app-canary
-                environment:
-                  - NODE_ENV=production
-                  - APP_PORT=${{ secrets.APP_PORT }}
-                  - REDIS_SENTINELS=sentinel-1:${{ secrets.SENTINEL_1_PORT }},sentinel-2:${{ secrets.SENTINEL_2_PORT }},sentinel-3:${{ secrets.SENTINEL_3_PORT }}
-                  - REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}
-                  - REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
-                  - REDIS_SENTINEL_QUORUM=${{ secrets.REDIS_SENTINEL_QUORUM }}
-                ports:
-                  - "3002:${{ secrets.APP_PORT }}"
-                restart: always
-                networks:
-                  - redis-network
-            EOF
+            # Recreate redis-network
+            echo "Recreating redis-network..."
+            docker network rm redis-network || true
+            docker network create redis-network
 
             # Start the main application services (Redis stack, etc.) first
             echo "Starting Redis services and application containers..."
@@ -453,22 +408,15 @@ jobs:
 
             # Now start the canary deployment separately using the dedicated compose file
             echo "Starting canary deployment..."
-            docker-compose -f docker-compose.canary.yml up -d
+            docker-compose -f docker-compose.canary.yml up -d --remove-orphans
 
             # Ensure Nginx is installed before trying to configure it
             if ! command -v nginx &> /dev/null; then
               echo "Nginx not found, installing..."
-              # Check if anything is running on port 80
               sudo lsof -i :80 || true
-              
-              # Stop any existing nginx service first
               sudo systemctl stop nginx || true
-              
-              # Install nginx
               sudo apt-get update
               sudo apt-get install -y nginx
-              
-              # Make sure nginx doesn't start automatically after install
               sudo systemctl stop nginx
             fi
 
@@ -479,7 +427,7 @@ jobs:
             # First verify if ports 3001 and 3002 are accessible
             echo "Verifying ports 3001 and 3002 are accessible..."
             docker ps | grep nextjs-app
-            
+
             # Create the Nginx configuration file
             cat <<EOF | sudo tee /etc/nginx/conf.d/nextjs-app.conf
             upstream nextjs_stable {
@@ -523,8 +471,6 @@ jobs:
             if [ $? -eq 0 ]; then
               echo "Nginx configuration test passed. Starting/reloading Nginx..."
               sudo systemctl restart nginx || sudo systemctl start nginx
-              
-              # Verify Nginx is running
               sleep 3
               sudo systemctl status nginx || true
             else
