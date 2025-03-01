@@ -345,6 +345,12 @@ jobs:
               sudo rm /etc/nginx/sites-enabled/default
             fi
             
+            # Remove any backup files that might cause conflicts
+            if [ -f /etc/nginx/sites-enabled/default.bak ]; then
+              echo "Removing conflicting Nginx backup configuration..."
+              sudo rm /etc/nginx/sites-enabled/default.bak
+            fi
+            
             # Test nginx configuration before reloading
             echo "Testing Nginx configuration..."
             if ! sudo nginx -t; then
