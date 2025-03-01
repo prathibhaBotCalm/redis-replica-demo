@@ -319,50 +319,6 @@ jobs:
           source: './*'
           target: '/home/${{ secrets.LIVE_USER }}/app'
 
-      - name: Create canary docker-compose file
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.LIVE_HOST }}
-          username: ${{ secrets.LIVE_USER }}
-          key: ${{ secrets.LIVE_SSH_KEY }}
-          script: |
-            set -euo pipefail
-            cd /home/${{ secrets.LIVE_USER }}/app
-            
-            # Create docker-compose.canary.yml if it doesn't exist
-            cat <<EOF > docker-compose.canary.yml
-            version: '3.8'
-            
-            networks:
-              redis-network:
-                external: true
-            
-            services:
-              nextjs-app-stable:
-                image: ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
-                container_name: nextjs-app-stable
-                ports:
-                  - "3001:${APP_PORT:-3000}"
-                networks:
-                  - redis-network
-                restart: unless-stopped
-                env_file:
-                  - .env
-            
-              nextjs-app-canary:
-                image: ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
-                container_name: nextjs-app-canary
-                ports:
-                  - "3002:${APP_PORT:-3000}"
-                networks:
-                  - redis-network
-                restart: unless-stopped
-                env_file:
-                  - .env
-                environment:
-                  - IS_CANARY=true
-            EOF
-
       - name: Deploy Canary Release
         uses: appleboy/ssh-action@master
         with:
@@ -373,29 +329,9 @@ jobs:
             set -euo pipefail
             cd /home/${{ secrets.LIVE_USER }}/app
 
-            # Ensure Docker is installed
-            if ! command -v docker &> /dev/null; then
-              echo "Docker not found, installing..."
-              sudo apt-get update
-              sudo apt-get install -y docker.io
-              sudo systemctl start docker
-              sudo systemctl enable docker
-              sudo usermod -aG docker $USER
-            else
-              echo "Docker is already installed"
-            fi
-
-            # Ensure Docker Compose is installed (latest version)
-            if ! command -v docker-compose &> /dev/null; then
-              echo "Installing Docker Compose..."
-              sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-              sudo chmod +x /usr/local/bin/docker-compose
-            else
-              echo "Docker Compose is already installed"
-            fi
-
-            echo "Logging into GHCR..."
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin || true
+            # Check Docker version
+            docker version
+            docker-compose version
 
             # Create or update .env file
             if [ ! -f .env ]; then
@@ -407,7 +343,7 @@ jobs:
               fi
             fi
 
-            # Append production environment variables to .env
+            # Update environment variables to .env (overwrite)
             cat <<EOF > .env
             NODE_ENV=production
             APP_PORT=${{ secrets.APP_PORT }}
@@ -429,15 +365,7 @@ jobs:
 
             # Make sure scripts directory exists and scripts are executable
             mkdir -p scripts
-            if [ -f scripts/init-master.sh ]; then
-              chmod +x scripts/init-master.sh
-            fi
-            if [ -f scripts/init-slave.sh ]; then
-              chmod +x scripts/init-slave.sh
-            fi
-            if [ -f scripts/backup.sh ]; then
-              chmod +x scripts/backup.sh
-            fi
+            find scripts -name "*.sh" -exec chmod +x {} \;
 
             # Clean up any existing canary containers to avoid conflicts
             echo "Cleaning up existing canary containers..."
@@ -445,29 +373,77 @@ jobs:
 
             # Pull the latest images for production
             echo "Pulling latest live images..."
-            docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-latest || echo "Failed to pull latest image, continuing anyway"
-            docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }} || echo "Failed to pull specific commit image, continuing anyway"
+            docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
+            docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
+
+            # Create a simple docker-compose-canary.yml without volume bindings
+            cat <<EOF > docker-compose-canary.yml
+            version: '3.8'
+            
+            services:
+              nextjs-app-stable:
+                image: ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
+                container_name: nextjs-app-stable
+                ports:
+                  - "3001:${{ secrets.APP_PORT }}"
+                environment:
+                  - NODE_ENV=production
+                  - REDIS_HOST=${{ secrets.REDIS_HOST_PROD }}
+                  - REDIS_PORT=${{ secrets.REDIS_PORT }}
+                  - REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
+                  - REDIS_SENTINELS=${{ secrets.REDIS_SENTINELS_PROD }}
+                  - REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}
+                  - IS_CANARY=false
+                networks:
+                  - redis-network
+                restart: unless-stopped
+            
+              nextjs-app-canary:
+                image: ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
+                container_name: nextjs-app-canary
+                ports:
+                  - "3002:${{ secrets.APP_PORT }}"
+                environment:
+                  - NODE_ENV=production
+                  - REDIS_HOST=${{ secrets.REDIS_HOST_PROD }}
+                  - REDIS_PORT=${{ secrets.REDIS_PORT }}
+                  - REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
+                  - REDIS_SENTINELS=${{ secrets.REDIS_SENTINELS_PROD }}
+                  - REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}
+                  - IS_CANARY=true
+                networks:
+                  - redis-network
+                restart: unless-stopped
+            
+            networks:
+              redis-network:
+                external: true
+            EOF
 
             # Ensure redis-network exists
             docker network inspect redis-network >/dev/null 2>&1 || docker network create redis-network
 
-            # Start the main application services (Redis stack, etc.) first
-            echo "Starting Redis services and application containers..."
-            docker-compose --profile production up -d
+            # Start the Redis services with the profile production
+            echo "Starting Redis services..."
+            docker-compose --profile production up -d redis-master redis-slave-1 redis-slave-2 sentinel-1 sentinel-2 sentinel-3 redis-backup
 
-            # Wait for main services to initialize
-            echo "Waiting for services to be ready..."
-            sleep 10
+            # Wait for Redis services to be ready
+            echo "Waiting for Redis services to be ready..."
+            sleep 15
+            
+            # Start the monitoring services separately
+            echo "Starting monitoring services..."
+            docker-compose up -d redis-exporter prometheus grafana
 
-            # Now start the canary deployment separately using the dedicated compose file
+            # Start canary deployment (with simplified file)
             echo "Starting canary deployment..."
-            docker-compose -f docker-compose.canary.yml up -d --remove-orphans
+            docker-compose -f docker-compose-canary.yml up -d --remove-orphans
+            
+            # Verify all containers are running
+            echo "Verifying all containers are running..."
+            docker ps
 
-            # Verify containers are running
-            echo "Verifying containers are running..."
-            docker ps | grep -E 'nextjs-app-(stable|canary)'
-
-            # Ensure Nginx is installed before trying to configure it
+            # Ensure Nginx is installed
             if ! command -v nginx &> /dev/null; then
               echo "Nginx not found, installing..."
               sudo apt-get update
@@ -515,9 +491,6 @@ jobs:
             # Remove any old default site configuration to avoid conflicts
             sudo rm -f /etc/nginx/sites-enabled/default || true
 
-            # Make sure proper permissions are set
-            sudo chown -R www-data:www-data /var/log/nginx /var/lib/nginx 2>/dev/null || true
-
             # Test Nginx configuration
             echo "Testing Nginx configuration..."
             sudo nginx -t
@@ -525,20 +498,11 @@ jobs:
             # If test passes, reload or start Nginx
             if [ $? -eq 0 ]; then
               echo "Nginx configuration test passed. Starting/reloading Nginx..."
-              if sudo systemctl is-active --quiet nginx; then
-                sudo systemctl reload nginx
-              else
-                sudo systemctl start nginx
-              fi
-              
-              # Verify Nginx is running
-              sudo systemctl status nginx --no-pager || true
+              sudo systemctl reload nginx || sudo systemctl restart nginx
             else
               echo "Nginx configuration failed. Checking for errors..."
-              sudo cat /var/log/nginx/error.log || true
               exit 1
             fi
 
             echo "Canary deployment completed successfully."
-            echo "Routing ${canary_weight}% of traffic to the new version (${GITHUB_SHA})."
-            echo "Monitor the canary deployment before promoting it to stable."
+            echo "Routing ${canary_weight}% of traffic to the new version."
