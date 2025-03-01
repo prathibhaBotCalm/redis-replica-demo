@@ -149,16 +149,34 @@ jobs:
             docker-compose --profile production rm -f app-stable
             docker-compose --profile production up -d app-stable
             
-            # Wait for the stable container to become healthy
+            # Wait for the stable container to initialize
             echo "Waiting for stable container to initialize..."
             sleep 10
             
+            # Fetch and display container logs for debugging
+            echo "Fetching logs for app-app-stable-1..."
+            docker logs app-app-stable-1 || true
+            
             # Verify the container is running
-            if ! docker ps | grep -q nextjs-app-stable; then
+            if ! docker ps | grep -q app-app-stable-1; then
               echo "::error::Stable container failed to start. Rolling back..."
+              
+              # Fetch logs again before rolling back
+              echo "Fetching logs for app-app-stable-1 before rollback..."
+              docker logs app-app-stable-1 || true
+              
+              # Roll back to the previous stable image
               docker-compose --profile production stop app-stable
               docker tag ghcr.io/${{ steps.repo.outputs.repo }}:live-backup-$TIMESTAMP ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
               docker-compose --profile production up -d app-stable
+              
+              # Verify rollback
+              if docker ps | grep -q app-app-stable-1; then
+                echo "Rollback successful. Previous stable version is now running."
+              else
+                echo "::error::Rollback failed. Manual intervention required."
+                exit 1
+              fi
               exit 1
             fi
             
