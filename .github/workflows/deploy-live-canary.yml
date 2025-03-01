@@ -90,6 +90,10 @@ jobs:
             echo "Logging into GHCR..."
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+            # Clean up existing containers
+            echo "Cleaning up existing containers..."
+            docker-compose down || true
+
             # Create or update .env file
             if [ ! -f .env ]; then
               cp .env.example .env
@@ -130,7 +134,6 @@ jobs:
             services:
               app-stable:
                 image: ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
-                container_name: nextjs-app-stable
                 environment:
                   - NODE_ENV=production
                   - APP_PORT=${{ secrets.APP_PORT }}
@@ -151,7 +154,6 @@ jobs:
 
               app-canary:
                 image: ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
-                container_name: nextjs-app-canary
                 environment:
                   - NODE_ENV=production
                   - APP_PORT=${{ secrets.APP_PORT }}
@@ -169,6 +171,10 @@ jobs:
                   - sentinel-1
                   - sentinel-2
                   - sentinel-3
+
+            volumes:
+              redis-data:
+              grafana-data:
             EOF
 
             # Validate Docker Compose configuration
