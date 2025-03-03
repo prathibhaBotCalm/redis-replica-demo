@@ -2,6 +2,7 @@ import { getUsers } from "@/actions/user";
 
 export default async function Home() {
   const users = await getUsers();
+  console.log("🚀 ~ Home ~ users:", users)
   const node_env = process.env.NODE_ENV
   return (
     <div>

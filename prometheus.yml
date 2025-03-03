@@ -15,77 +15,72 @@ rule_files:
   # - "second_rules.yml"
 
 scrape_configs:
-  - job_name: "prometheus"
+  - job_name: 'prometheus'
     static_configs:
-      - targets: ["localhost:9090"]
+      - targets: ['prometheus:9090']  # Changed from localhost to prometheus
 
-  - job_name: "redis-master"
+  - job_name: 'redis-master'
     static_configs:
-      - targets: ["redis-exporter:9121"]
+      - targets: ['redis-exporter:9121']
         labels:
-          instance: "redis-master"
-          role: "master"
+          instance: 'redis-master'
+          role: 'master'
 
   # App metrics - assuming your app exposes metrics on /metrics
-  - job_name: "app"
+  - job_name: 'app'
     static_configs:
-      - targets: ["app:${APP_PORT}"]
+      - targets: ['app:${APP_PORT}']  # This might need hardcoding if env vars aren't expanded
         labels:
-          instance: "application"
-
-  # Node exporter for host metrics (optional - if you add this service)
-  # - job_name: "node"
-  #   static_configs:
-  #     - targets: ["node-exporter:9100"]
+          instance: 'application'
 
   # Redis slaves metrics through redis_exporter
-  - job_name: "redis-slave-1"
+  - job_name: 'redis-slave-1'
     metrics_path: /scrape
     static_configs:
-      - targets: ["redis-exporter:9121"]
+      - targets: ['redis-exporter:9121']
         labels:
-          instance: "redis-slave-1"
-          role: "slave"
+          instance: 'redis-slave-1'
+          role: 'slave'
     params:
-      target: ["redis-slave-1:6379"]
+      target: ['redis-slave-1:6379']
 
-  - job_name: "redis-slave-2"
+  - job_name: 'redis-slave-2'
     metrics_path: /scrape
     static_configs:
-      - targets: ["redis-exporter:9121"]
+      - targets: ['redis-exporter:9121']
         labels:
-          instance: "redis-slave-2"
-          role: "slave"
+          instance: 'redis-slave-2'
+          role: 'slave'
     params:
-      target: ["redis-slave-2:6379"]
+      target: ['redis-slave-2:6379']
 
   # Redis sentinels
-  - job_name: "sentinel-1"
+  - job_name: 'sentinel-1'
     metrics_path: /scrape
     static_configs:
-      - targets: ["redis-exporter:9121"]
+      - targets: ['redis-exporter:9121']
         labels:
-          instance: "sentinel-1"
-          role: "sentinel"
+          instance: 'sentinel-1'
+          role: 'sentinel'
     params:
-      target: ["sentinel-1:26379"]
+      target: ['sentinel-1:26379']
 
-  - job_name: "sentinel-2"
+  - job_name: 'sentinel-2'
     metrics_path: /scrape
     static_configs:
-      - targets: ["redis-exporter:9121"]
+      - targets: ['redis-exporter:9121']
         labels:
-          instance: "sentinel-2"
-          role: "sentinel"
+          instance: 'sentinel-2'
+          role: 'sentinel'
     params:
-      target: ["sentinel-2:26379"]
+      target: ['sentinel-2:26379']
 
-  - job_name: "sentinel-3"
+  - job_name: 'sentinel-3'
     metrics_path: /scrape
     static_configs:
-      - targets: ["redis-exporter:9121"]
+      - targets: ['redis-exporter:9121']
         labels:
-          instance: "sentinel-3"
-          role: "sentinel"
+          instance: 'sentinel-3'
+          role: 'sentinel'
     params:
-      target: ["sentinel-3:26379"]
+      target: ['sentinel-3:26379']
