@@ -29,7 +29,7 @@ services:
       - ./backup:/backup
       - ./scripts/init-master.sh:/scripts/init-master.sh:ro
     healthcheck:
-      test: 
+      test:
         ['CMD', 'bash', '-c', 'redis-cli -a ${REDIS_PASSWORD} ping | grep PONG']
       interval: 10s
       timeout: 5s
@@ -146,64 +146,6 @@ services:
     entrypoint: ['/bin/sh', '/scripts/backup.sh']
     profiles:
       - production
-    
-
-# --- Monitoring Services ---
-  redis-exporter:
-    image: oliver006/redis_exporter:latest
-    environment:
-      - REDIS_ADDR=redis-master:6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-    networks:
-      - redis-network
-      - monitoring-network
-    restart: always
-
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--web.enable-lifecycle'
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    ports:
-      - "9090:9090"
-    networks:
-      - monitoring-network
-      - redis-network
-    depends_on:
-      - redis-exporter
-    restart: always
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: grafana
-    environment:
-      GF_SECURITY_ADMIN_PASSWORD: "admin"
-      GF_SECURITY_DISABLE_INITIAL_ADMIN_PASSWORD_HINT: "true"
-      GF_SECURITY_COOKIE_SECURE: "true"
-      GF_SECURITY_COOKIE_SAMESITE: "lax"
-      GF_SESSION_PROVIDER: "database"
-      GF_INSTALL_PLUGINS: "redis-datasource"
-      GF_LOG_LEVEL: "debug"  # Increase logging for troubleshooting
-      GF_PATHS_PROVISIONING: "/etc/grafana/provisioning"
-    ports:
-      - "3005:3000"
-    networks:
-      - monitoring-network
-    volumes:
-      - grafana-data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning
-    depends_on:
-      - prometheus
-    restart: always
 
 volumes:
   redis-data:
-  grafana-data:
-  prometheus-data:

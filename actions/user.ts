@@ -1,4 +1,4 @@
-// actions/user.ts
+'use server';
 
 import { initializeUserRepository } from '@/schema/user';
 
@@ -19,10 +19,12 @@ export async function getUsers() {
   try {
     const userRepository = await getUserRepository();
     const users = await userRepository.search().returnAll();
+    const usersPlain = JSON.parse(JSON.stringify(users));
+
     return {
       status: 200,
       msg: 'success',
-      data: users,
+      data: usersPlain,
     };
   } catch (error: any) {
     console.error('Error fetching users:', error);
@@ -51,5 +53,16 @@ export async function createUser(name: string, email?: string, age?: number) {
       msg: error?.message || 'Internal Server Error',
       data: null,
     };
+  }
+}
+
+export async function deleteUser(userId: string) {
+  try {
+    const userRepository = await getUserRepository();
+    await userRepository.remove(userId);
+    return { status: 200, msg: 'User deleted successfully' };
+  } catch (error: any) {
+    console.error('Error deleting user:', error);
+    return { status: 500, msg: error?.message || 'Internal Server Error' };
   }
 }
