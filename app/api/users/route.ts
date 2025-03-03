@@ -1,4 +1,3 @@
-// pages/api/user.ts
 
 import { createUser, getUsers } from '@/actions/user';
 
