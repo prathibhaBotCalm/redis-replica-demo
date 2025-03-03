@@ -1,0 +1,12 @@
+
+services:
+  app:
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - .:/app
+      - /app/node_modules
+    ports:
+      - '${APP_PORT}:${APP_PORT}'
+    command: yarn dev
+

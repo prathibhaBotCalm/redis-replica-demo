@@ -141,6 +141,10 @@ jobs:
                   - REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}
                   - REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
                   - REDIS_SENTINEL_QUORUM=${{ secrets.REDIS_SENTINEL_QUORUM }}
+                  - CANARY_WEIGHT=${{ secrets.CANARY_WEIGHT }}
+                  - REDIS_SENTINELS_PROD=${{ secrets.REDIS_SENTINELS_PROD }}
+                  - REDIS_HOST_PROD=${{ secrets.REDIS_HOST_PROD }}
+                  - IS_DEV=${{ secrets.IS_DEV }}
                 ports:
                   - "3001:${{ secrets.APP_PORT }}"
                 restart: always
@@ -161,6 +165,9 @@ jobs:
                   - REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}
                   - REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
                   - REDIS_SENTINEL_QUORUM=${{ secrets.REDIS_SENTINEL_QUORUM }}
+                  - REDIS_SENTINELS_PROD=${{ secrets.REDIS_SENTINELS_PROD }}
+                  - REDIS_HOST_PROD=${{ secrets.REDIS_HOST_PROD }}
+                  - IS_DEV=${{ secrets.IS_DEV }}
                 ports:
                   - "3002:${{ secrets.APP_PORT }}"
                 restart: always

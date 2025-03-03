@@ -6,7 +6,7 @@ export default async function Home() {
   const node_env = process.env.NODE_ENV
   return (
     <div>
-      <h1 className="text-3xl">Redis Demo - {node_env}</h1>
+      <h1 className="text-3xl">Redis Demo - {node_env} env</h1>
       <ul>
         {users.data && users.data.map((user) => (
           <li key={user.name}>{user.name}</li>
