@@ -1,15 +1,10 @@
 name: SonarQube Analysis
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+  workflow_call:
 
 jobs:
-  sonarqube:
+  sonar_scan:
     runs-on: ubuntu-latest
 
     steps:
