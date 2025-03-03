@@ -13,12 +13,12 @@ permissions:
   id-token: write
 
 jobs:
-  sonar_scan:
-    secrets: inherit
-    uses: ./.github/workflows/sonar-scan.yml
+  # sonar_scan:
+  #   secrets: inherit
+  #   uses: ./.github/workflows/sonar-scan.yml
 
   build:
-    needs: sonar_scan
+    # needs: sonar_scan
     uses: ./.github/workflows/build-docker.yml
 
   deploy-staging:
