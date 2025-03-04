@@ -6,7 +6,7 @@ while true; do
 
   echo "Backing up Redis at $TIMESTAMP" | tee -a backup/backup.log
 
-  cp data/dump.rdb "$BACKUP_FILE"
+  cp backup/dump.rdb "$BACKUP_FILE"
 
   # Ensure backups are rotated (delete backups older than 7 days)
   find backup -name "dump-*.rdb" -mtime +7 -delete
