@@ -78,6 +78,46 @@ services:
     profiles:
       - production
 
+      # Add Redis exporters
+  redis-exporter-master:
+    image: oliver006/redis_exporter
+    container_name: redis-exporter-master
+    environment:
+      - REDIS_ADDR=redis://redis-master:6379
+      # - REDIS_PASSWORD=${REDIS_PASSWORD}
+    networks:
+      - redis-network
+      - monitoring-network
+    ports:
+      - "9121:9121"
+    restart: unless-stopped
+
+  redis-exporter-slave1:
+    image: oliver006/redis_exporter
+    container_name: redis-exporter-slave1
+    environment:
+      - REDIS_ADDR=redis://redis-slave-1:6379
+      # - REDIS_PASSWORD=${REDIS_PASSWORD}
+    networks:
+      - redis-network
+      - monitoring-network
+    ports:
+      - "9122:9121"  # Expose internal port 9121 on host port 9122
+    restart: unless-stopped
+
+  redis-exporter-slave2:
+    image: oliver006/redis_exporter
+    container_name: redis-exporter-slave2
+    environment:
+      - REDIS_ADDR=redis://redis-slave-2:6379
+      # - REDIS_PASSWORD=${REDIS_PASSWORD}
+    networks:
+      - redis-network
+      - monitoring-network
+    ports:
+      - "9123:9121"  # Expose internal port 9121 on host port 9123
+    restart: unless-stopped
+
   sentinel-1:
     image: bitnami/redis-sentinel:latest
     environment:
@@ -147,5 +187,33 @@ services:
     profiles:
       - production
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - monitoring-network
+      - redis-network
+    restart: unless-stopped
+    profiles:
+      - production
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3005:3000"  # Map Grafana container port 3000 to host port 3005
+    networks:
+      - monitoring-network
+    volumes:
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+    profiles:
+      - production
+
 volumes:
   redis-data:
+  grafana-data:

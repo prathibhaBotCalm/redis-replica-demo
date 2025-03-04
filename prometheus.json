@@ -1,0 +1,214 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0,211,255,1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 0,
+  "id": null,
+  "iteration": 1623441234567,
+  "links": [],
+  "panels": [
+    {
+      "datasource": "prometheus",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "up{job=\"redis\"}",
+          "format": "time_series",
+          "interval": "",
+          "legendFormat": "Redis Up",
+          "refId": "A"
+        }
+      ],
+      "title": "Redis Up",
+      "type": "stat"
+    },
+    {
+      "datasource": "prometheus",
+      "fieldConfig": {
+        "defaults": { "unit": "bytes" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "targets": [
+        {
+          "expr": "redis_memory_used_bytes",
+          "format": "time_series",
+          "interval": "",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Redis Memory Used",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "prometheus",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 0 },
+      "id": 3,
+      "targets": [
+        {
+          "expr": "redis_connected_clients",
+          "format": "time_series",
+          "interval": "",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Redis Connected Clients",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "prometheus",
+      "fieldConfig": {
+        "defaults": { "unit": "s" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 8 },
+      "id": 4,
+      "targets": [
+        {
+          "expr": "rate(process_cpu_seconds_total[1m])",
+          "format": "time_series",
+          "interval": "",
+          "legendFormat": "CPU Usage",
+          "refId": "A"
+        }
+      ],
+      "title": "Process CPU Usage",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "prometheus",
+      "fieldConfig": {
+        "defaults": { "unit": "bytes" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 8 },
+      "id": 5,
+      "targets": [
+        {
+          "expr": "process_resident_memory_bytes",
+          "format": "time_series",
+          "interval": "",
+          "legendFormat": "Resident Memory",
+          "refId": "A"
+        }
+      ],
+      "title": "Process Resident Memory",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "prometheus",
+      "fieldConfig": {
+        "defaults": { "unit": "s" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 8 },
+      "id": 6,
+      "targets": [
+        {
+          "expr": "nodejs_eventloop_lag_p50_seconds",
+          "format": "time_series",
+          "interval": "",
+          "legendFormat": "P50 Event Loop Lag",
+          "refId": "A"
+        }
+      ],
+      "title": "Event Loop Lag (P50)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "prometheus",
+      "fieldConfig": {
+        "defaults": { "unit": "bytes" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 16 },
+      "id": 7,
+      "targets": [
+        {
+          "expr": "nodejs_heap_size_used_bytes",
+          "format": "time_series",
+          "interval": "",
+          "legendFormat": "Heap Used",
+          "refId": "A"
+        }
+      ],
+      "title": "Node.js Heap Used",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "prometheus",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 16 },
+      "id": 8,
+      "targets": [
+        {
+          "expr": "nodejs_active_handles_total",
+          "format": "time_series",
+          "interval": "",
+          "legendFormat": "Active Handles",
+          "refId": "A"
+        }
+      ],
+      "title": "Node.js Active Handles",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "prometheus",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 16 },
+      "id": 9,
+      "targets": [
+        {
+          "expr": "nodejs_active_requests_total",
+          "format": "time_series",
+          "interval": "",
+          "legendFormat": "Active Requests",
+          "refId": "A"
+        }
+      ],
+      "title": "Node.js Active Requests",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 30,
+  "style": "dark",
+  "tags": ["redis", "app", "nodejs", "monitoring"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Advanced Redis & App Monitoring Dashboard",
+  "uid": "advanced-monitoring",
+  "version": 1
+}
