@@ -40,7 +40,8 @@ export async function getUsers() {
 export async function createUser(name: string, email?: string, age?: number) {
   try {
     const userRepository = await getUserRepository();
-    const user = await userRepository.save({ name, email, age });
+    const id = Math.random().toString(36).substr(2, 9);
+    const user = await userRepository.save({ id, name, email, age });
     return {
       status: 200,
       msg: 'success',
@@ -56,10 +57,10 @@ export async function createUser(name: string, email?: string, age?: number) {
   }
 }
 
-export async function deleteUser(userId: string) {
+export async function deleteUser(id: string) {
   try {
     const userRepository = await getUserRepository();
-    await userRepository.remove(userId);
+    await userRepository.remove(id);
     return { status: 200, msg: 'User deleted successfully' };
   } catch (error: any) {
     console.error('Error deleting user:', error);

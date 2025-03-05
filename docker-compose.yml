@@ -37,6 +37,7 @@ services:
     restart: always
     profiles:
       - production
+      - development
 
   redis-slave-1:
     image: redis/redis-stack:latest
@@ -57,6 +58,7 @@ services:
     restart: always
     profiles:
       - production
+      - development
 
   redis-slave-2:
     image: redis/redis-stack:latest
@@ -77,6 +79,7 @@ services:
     restart: always
     profiles:
       - production
+      - development
 
       # Add Redis exporters
   redis-exporter-master:
@@ -91,6 +94,8 @@ services:
     ports:
       - "9121:9121"
     restart: unless-stopped
+    profiles:
+      - production
 
   redis-exporter-slave1:
     image: oliver006/redis_exporter
@@ -104,6 +109,8 @@ services:
     ports:
       - "9122:9121"  # Expose internal port 9121 on host port 9122
     restart: unless-stopped
+    profiles:
+      - production
 
   redis-exporter-slave2:
     image: oliver006/redis_exporter
@@ -117,6 +124,8 @@ services:
     ports:
       - "9123:9121"  # Expose internal port 9121 on host port 9123
     restart: unless-stopped
+    profiles:
+      - production
 
   sentinel-1:
     image: bitnami/redis-sentinel:latest
@@ -136,6 +145,7 @@ services:
     restart: always
     profiles:
       - production
+      - development
 
   sentinel-2:
     image: bitnami/redis-sentinel:latest
@@ -155,6 +165,7 @@ services:
     restart: always
     profiles:
       - production
+      - development
 
   sentinel-3:
     image: bitnami/redis-sentinel:latest
@@ -174,6 +185,7 @@ services:
     restart: always
     profiles:
       - production
+      - development
 
   redis-backup:
     image: alpine
@@ -186,6 +198,7 @@ services:
     entrypoint: ['/bin/sh', '/scripts/backup.sh']
     profiles:
       - production
+      - development
 
   prometheus:
     image: prom/prometheus:latest

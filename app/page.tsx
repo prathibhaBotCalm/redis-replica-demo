@@ -3,6 +3,7 @@ import { getUsers, createUser, deleteUser } from '@/actions/user';
 import { Suspense, useEffect, useState } from 'react';
 
 type User = {
+  id?: string;
   name?: string;
   email?: string;
   age?: number;
@@ -98,7 +99,7 @@ export default function Home() {
               >
                 <span>{user.name}</span>
                 <button
-                  onClick={() => handleDeleteUser(user.name || '')}
+                  onClick={() => handleDeleteUser(user.id || '')}
                   className='bg-red-500 text-white p-2 rounded-md hover:bg-red-600'
                 >
                   Delete
