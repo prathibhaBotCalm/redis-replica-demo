@@ -60,7 +60,14 @@ export async function createUser(name: string, email?: string, age?: number) {
 export async function deleteUser(id: string) {
   try {
     const userRepository = await getUserRepository();
-    await userRepository.remove(id);
+
+    // Make sure you're passing the correct ID
+    const user = await userRepository.fetch(id); // This fetches the user by ID to ensure the user exists
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    await userRepository.remove(user.entityId); // Use entityId to remove the user
     return { status: 200, msg: 'User deleted successfully' };
   } catch (error: any) {
     console.error('Error deleting user:', error);

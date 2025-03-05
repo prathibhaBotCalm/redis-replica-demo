@@ -26,6 +26,8 @@ jobs:
           REDIS_MASTER_PORT: ${{ secrets.REDIS_MASTER_PORT }}
           REDIS_SLAVE_1_PORT: ${{ secrets.REDIS_SLAVE_1_PORT }}
           REDIS_SLAVE_2_PORT: ${{ secrets.REDIS_SLAVE_2_PORT }}
+          REDIS_SLAVE_3_PORT: ${{ secrets.REDIS_SLAVE_3_PORT }}
+          REDIS_SLAVE_4_PORT: ${{ secrets.REDIS_SLAVE_4_PORT }}
           SENTINEL_1_PORT: ${{ secrets.SENTINEL_1_PORT }}
           SENTINEL_2_PORT: ${{ secrets.SENTINEL_2_PORT }}
           SENTINEL_3_PORT: ${{ secrets.SENTINEL_3_PORT }}
@@ -108,6 +110,8 @@ jobs:
             REDIS_SLAVE_2_PORT=${{ secrets.REDIS_SLAVE_2_PORT }}
             SENTINEL_1_PORT=${{ secrets.SENTINEL_1_PORT }}
             SENTINEL_2_PORT=${{ secrets.SENTINEL_2_PORT }}
+            REDIS_SLAVE_3_PORT: ${{ secrets.REDIS_SLAVE_3_PORT }}
+            REDIS_SLAVE_4_PORT: ${{ secrets.REDIS_SLAVE_4_PORT }}
             SENTINEL_3_PORT=${{ secrets.SENTINEL_3_PORT }}
             REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
             REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}

@@ -81,6 +81,48 @@ services:
       - production
       - development
 
+  redis-slave-3:
+    image: redis/redis-stack:latest
+    command: ['/scripts/init-slave.sh']
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    ports:
+      - '${REDIS_SLAVE_3_PORT}:6379'
+    networks:
+      - redis-network
+    volumes:
+      - ./scripts/init-slave.sh:/scripts/init-slave.sh:ro
+    environment:
+      - REDIS_MASTER_HOST=redis-master
+      - REDIS_MASTER_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    restart: always
+    profiles:
+      - production
+      - development
+
+  redis-slave-4:
+    image: redis/redis-stack:latest
+    command: ['/scripts/init-slave.sh']
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    ports:
+      - '${REDIS_SLAVE_4_PORT}:6379'
+    networks:
+      - redis-network
+    volumes:
+      - ./scripts/init-slave.sh:/scripts/init-slave.sh:ro
+    environment:
+      - REDIS_MASTER_HOST=redis-master
+      - REDIS_MASTER_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    restart: always
+    profiles:
+      - production
+      - development
+
       # Add Redis exporters
   redis-exporter-master:
     image: oliver006/redis_exporter

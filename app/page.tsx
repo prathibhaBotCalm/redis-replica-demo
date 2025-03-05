@@ -1,5 +1,5 @@
 'use client';
-import { getUsers, createUser, deleteUser } from '@/actions/user';
+import { createUser, deleteUser, getUsers } from '@/actions/user';
 import { Suspense, useEffect, useState } from 'react';
 
 type User = {
@@ -13,6 +13,8 @@ export default function Home() {
   const [users, setUsers] = useState<User[] | null>(null);
   const [newUser, setNewUser] = useState<User>({ name: '', email: '', age: 0 });
   const [loading, setLoading] = useState(false);
+
+  const node_env = process.env.NODE_ENV;
 
   // Fetch users from the server
   const fetchUsers = async () => {
@@ -36,11 +38,13 @@ export default function Home() {
 
   // Delete a user
   const handleDeleteUser = async (userId: string) => {
-    await deleteUser(userId); // Assuming deleteUser sends the correct request
-    fetchUsers(); // Refresh users list after deletion
+    const response = await deleteUser(userId); // Assuming deleteUser sends the correct request
+    if (response.status === 200) {
+      fetchUsers(); // Refresh users list after deletion
+    } else {
+      alert('Error deleting user');
+    }
   };
-
-  const node_env = process.env.NODE_ENV;
 
   useEffect(() => {
     fetchUsers();
@@ -94,7 +98,7 @@ export default function Home() {
           <ul className='list-disc pl-5 space-y-2'>
             {users.map((user) => (
               <li
-                key={user.name}
+                key={user.id}
                 className='text-lg text-gray-700 flex justify-between items-center'
               >
                 <span>{user.name}</span>
