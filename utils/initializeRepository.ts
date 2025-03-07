@@ -1,6 +1,6 @@
 import { Client, Repository, Schema } from 'redis-om';
 import * as logger from '../lib/logger';
-import { redisManager } from '../lib/redis';
+import { redisManager } from '../lib/redis copy';
 
 const log = logger.createContextLogger('RepositoryManager');
 

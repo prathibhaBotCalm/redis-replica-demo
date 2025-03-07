@@ -1,5 +1,6 @@
 
 import { createUser, getUsers } from '@/actions/user';
+import { revalidatePath } from 'next/cache';
 
 export async function GET(req:Request){
   const resp = await getUsers();
@@ -21,6 +22,7 @@ export async function POST(request: Request) {
     const { name, email, age } = body;
 
     const resp = await createUser(name, email, age);
+    revalidatePath('/users'); // Revalidate the cache for the users list
 
     return new Response(JSON.stringify(resp), {
       status: resp.status,

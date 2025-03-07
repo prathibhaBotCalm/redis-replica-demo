@@ -1,672 +1,314 @@
-import {
-  MasterAddress,
-  RedisConfig,
-  RedisManagerEvents,
-  SentinelConfig,
-} from '@/types/redis.types';
-import EventEmitter from 'events';
-import Redis from 'ioredis';
+import Redis, { SentinelAddress } from 'ioredis';
 import { Client } from 'redis-om';
 import * as baseLogger from './logger';
 
 const logger = baseLogger.createContextLogger('Redis');
 
-// Load configuration from environment variables
-function loadConfig(): RedisConfig {
+// Helper function to parse Redis Sentinel addresses
+function parseSentinels(sentinelsString: string): SentinelAddress[] {
+  if (!sentinelsString) return [];
+
+  return sentinelsString
+    .split(',')
+    .map((sentinel) => {
+      const [host, port] = sentinel.split(':');
+      if (!host || !port) return null;
+      return { host: host.trim(), port: parseInt(port.trim(), 10) };
+    })
+    .filter((sentinel): sentinel is SentinelAddress => sentinel !== null);
+}
+
+// Define Redis configuration with `isDev`
+function loadRedisConfig() {
+  const isDev = process.env.IS_DEV === 'true'; // This check defines whether it's dev or prod
+
+  const sentinelsString = isDev
+    ? process.env.REDIS_SENTINELS_DEV
+    : process.env.REDIS_SENTINELS_PROD;
+
+  const sentinels = sentinelsString ? parseSentinels(sentinelsString) : [];
+
+  const directHost = isDev
+    ? process.env.REDIS_HOST_DEV // Localhost for dev
+    : process.env.REDIS_HOST_PROD; // Redis server for prod
+
+  const directPort = parseInt(process.env.REDIS_PORT || '6379', 10);
+
   return {
+    sentinels,
+    directHost,
+    directPort,
     masterName: process.env.REDIS_MASTER_NAME || 'mymaster',
     password: process.env.REDIS_PASSWORD,
-    sentinelPassword: process.env.REDIS_SENTINEL_PASSWORD,
-    port: Number(process.env.REDIS_PORT || '6379'),
-    pollIntervalMs: Number(process.env.MASTER_POLL_INTERVAL_MS || '5000'),
-    hosts: {
-      development: process.env.REDIS_HOST_DEV || 'localhost',
-      production: process.env.REDIS_HOST_PROD || 'redis',
-    },
-    sentinels: {
-      development:
-        process.env.REDIS_SENTINELS_DEV?.trim() ||
-        '157.230.253.3:26379,157.230.253.3:26380,157.230.253.3:26381',
-      production:
-        process.env.REDIS_SENTINELS_PROD?.trim() ||
-        'sentinel-1:26379,sentinel-2:26380,sentinel-3:26381',
-    },
-    maxRetries: Number(process.env.REDIS_MAX_RETRIES || '5'),
-    connectionTimeout: Number(process.env.REDIS_CONNECTION_TIMEOUT || '3000'),
+    sentinelPassword:
+      process.env.REDIS_SENTINEL_PASSWORD || process.env.REDIS_PASSWORD,
+    useDirectConnection: isDev || sentinels.length === 0,
   };
 }
 
-// Redis connection manager class
-export class RedisConnectionManager {
-  private static instance: RedisConnectionManager;
-  private readonly config: RedisConfig;
-  private redisClient: Redis | null = null;
-  private redisOmClient: Client | null = null;
-  private currentMaster: MasterAddress | null = null;
-  private sentinels: SentinelConfig[] = [];
-  private isProduction: boolean;
-  private redisHost: string;
-  private pollInterval: NodeJS.Timeout | null = null;
-  private retryCount = 0;
-  private directConnectionMode = false;
-  private activeSentinelClients: Redis[] = [];
-  private isClosing = false;
-  private reconnectTimer: NodeJS.Timeout | null = null;
+const config = loadRedisConfig();
 
-  // Type-safe event emitter
-  public readonly events = new EventEmitter() as EventEmitter & {
-    on: <K extends keyof RedisManagerEvents>(
-      event: K,
-      listener: RedisManagerEvents[K]
-    ) => EventEmitter;
-    emit: <K extends keyof RedisManagerEvents>(
-      event: K,
-      ...args: Parameters<RedisManagerEvents[K]>
-    ) => boolean;
-  };
+// Create Redis client (either direct or via Sentinel)
+let redisClient: Redis;
 
-  private constructor() {
-    this.config = loadConfig();
-    this.isProduction = process.env.IS_DEV !== 'true';
-    this.redisHost = this.isProduction
-      ? this.config.hosts.production
-      : this.config.hosts.development;
-    logger.info(
-      `Using ${this.isProduction ? 'production' : 'development'} Redis host: ${
-        this.redisHost
-      }`
-    );
-    this.sentinels = this.parseSentinels(
-      this.isProduction
-        ? this.config.sentinels.production
-        : this.config.sentinels.development
-    );
-
-    if (this.sentinels.length === 0) {
-      logger.warn(
-        'No valid Sentinels found, switching to direct connection mode'
-      );
-      this.directConnectionMode = true;
-    }
-  }
-
-  // Singleton pattern
-  public static getInstance(): RedisConnectionManager {
-    if (!RedisConnectionManager.instance) {
-      RedisConnectionManager.instance = new RedisConnectionManager();
-    }
-    return RedisConnectionManager.instance;
-  }
-
-  // Parse the sentinel string into an array of SentinelConfig objects
-  private parseSentinels(sentinelStr: string): SentinelConfig[] {
-    return sentinelStr
-      .split(',')
-      .map((sentinel) => {
-        const [host, port] = sentinel.trim().split(':');
-        return host && port ? { host, port: Number(port) } : null;
-      })
-      .filter((sentinel): sentinel is SentinelConfig => sentinel !== null);
-  }
-
-  // Fetch the master address from Sentinels or fall back to direct connection
-  private async getMasterAddress(): Promise<MasterAddress> {
-    if (this.directConnectionMode) {
-      return { host: this.redisHost, port: this.config.port };
-    }
-
-    const errors: Error[] = [];
-    this.cleanupSentinelClients();
-    for (const sentinel of this.sentinels) {
-      try {
-        const masterAddr = await this.querySentinelForMaster(sentinel);
-        if (masterAddr) return masterAddr;
-      } catch (error: any) {
-        errors.push(error);
-        logger.warn(
-          `Sentinel ${sentinel.host}:${sentinel.port} failed: ${error.message}`
-        );
+if (config.useDirectConnection) {
+  console.log(
+    `Using direct Redis connection to ${config.directHost}:${config.directPort}`
+  );
+  redisClient = new Redis({
+    host: config.directHost,
+    port: config.directPort,
+    password: config.password,
+    maxRetriesPerRequest: 3,
+    enableReadyCheck: true,
+    connectionName: 'app-connection',
+    retryStrategy: (times: number) =>
+      times > 10 ? null : Math.min(times * 100, 3000),
+  });
+} else {
+  console.log(
+    `Using Redis Sentinel connection with master: ${config.masterName}`
+  );
+  redisClient = new Redis({
+    sentinels: config.sentinels,
+    name: config.masterName,
+    password: config.password,
+    sentinelPassword: config.sentinelPassword,
+    maxRetriesPerRequest: 3,
+    enableReadyCheck: true,
+    connectionName: 'app-connection',
+    retryStrategy: (times: number) =>
+      times > 10 ? null : Math.min(times * 100, 3000),
+    sentinelRetryStrategy: (times: number) => Math.min(times * 500, 5000),
+    reconnectOnError: (err: Error) => {
+      const shouldReconnect = err.message.includes('READONLY');
+      if (shouldReconnect) {
+        console.log('READONLY error detected, reconnecting...');
       }
-    }
+      return shouldReconnect;
+    },
+  });
+}
 
-    // If all sentinels fail, switch to direct connection mode
-    this.directConnectionMode = true;
-    logger.warn('All sentinels failed, switching to direct connection mode');
-    return { host: this.redisHost, port: this.config.port };
+// Set up Redis client event listeners
+redisClient.on('error', (err) => {
+  console.error('Redis client error:', err);
+});
+
+redisClient.on('connect', () => {
+  console.log('Redis client connected successfully');
+});
+
+redisClient.on('ready', () => {
+  console.log('Redis client is ready');
+});
+
+redisClient.on('reconnecting', () => {
+  console.log('Reconnecting to Redis...');
+});
+
+redisClient.on('end', () => {
+  console.log('Redis connection ended');
+});
+
+// Sentinel-specific events
+if (!config.useDirectConnection) {
+  redisClient.on('+switch-master', (master: string) => {
+    console.log(`Switch to new master detected for ${master}`);
+    // Force Redis-OM to reconnect on next call
+    isRedisOmConnected = false;
+    // Close Redis-OM client to force reconnection
+    if (redisOmClient && redisOmClient.isOpen()) {
+      redisOmClient.close().catch((err) => {
+        console.error('Error closing Redis-OM client during failover:', err);
+      });
+    }
+  });
+}
+
+// Create Redis-OM client
+const redisOmClient = new Client();
+
+// Flag to track Redis-OM connection status
+let isRedisOmConnected = false;
+let lastMasterCheck = 0;
+const MASTER_CHECK_INTERVAL = 5000; // 5 seconds
+
+// Helper function to get current master from Sentinel setup
+async function getCurrentMaster() {
+  if (config.useDirectConnection) {
+    return { host: config.directHost, port: config.directPort };
   }
 
-  private async querySentinelForMaster(
-    sentinel: SentinelConfig
-  ): Promise<MasterAddress | null> {
+  try {
+    const sentinel = config.sentinels[0];
+    if (!sentinel) {
+      throw new Error('No sentinels configured');
+    }
+
     const sentinelClient = new Redis({
       host: sentinel.host,
       port: sentinel.port,
-      password: this.config.sentinelPassword,
-      connectTimeout: this.config.connectionTimeout,
+      password: config.sentinelPassword,
+      connectTimeout: 2000,
     });
-
-    // Add to active sentinel clients for proper cleanup
-    this.activeSentinelClients.push(sentinelClient);
 
     try {
-      const response = await Promise.race([
-        sentinelClient.call(
-          'SENTINEL',
-          'get-master-addr-by-name',
-          this.config.masterName
-        ),
-        new Promise((_, reject) =>
-          setTimeout(
-            () => reject(new Error('Sentinel query timed out')),
-            this.config.connectionTimeout
-          )
-        ),
-      ]);
+      const result = (await sentinelClient.call(
+        'SENTINEL',
+        'get-master-addr-by-name',
+        config.masterName
+      )) as string[];
 
-      if (Array.isArray(response) && response.length === 2) {
-        let [host, portStr] = response;
-        let port = Number(portStr);
+      await sentinelClient.disconnect();
 
-        if (!this.isProduction && this.isPrivateIP(host)) {
-          logger.info(
-            `Replacing internal IP ${host} with configured host ${this.redisHost}`
-          );
-          host = this.redisHost;
-          port = this.config.port;
-        }
-
-        logger.info(`Master Address: ${host}:${port}`);
-        return { host, port };
-      }
-      return null;
-    } catch (err: any) {
-      logger.warn(`Sentinel query failed: ${err.message}`);
-      return null;
-    } finally {
-      // Remove from active clients list
-      const index = this.activeSentinelClients.indexOf(sentinelClient);
-      if (index !== -1) {
-        this.activeSentinelClients.splice(index, 1);
-      }
-      sentinelClient.disconnect();
-    }
-  }
-
-  // Utility to check if the host is a private IP
-  private isPrivateIP(host: string): boolean {
-    return (
-      host.startsWith('172.') ||
-      host.startsWith('10.') ||
-      host.startsWith('192.168.')
-    );
-  }
-
-  // Clean up the active sentinel clients
-  private cleanupSentinelClients(): void {
-    this.activeSentinelClients.forEach((client) => {
-      try {
-        client.disconnect(true);
-      } catch (err) {
-        /* Ignore errors */
-      }
-    });
-    this.activeSentinelClients = [];
-  }
-
-  private setupSentinelEventListeners(): void {
-    if (this.directConnectionMode || !this.redisClient) return;
-
-    this.redisClient.on('sentinelReconnect', () => {
-      logger.info('Reconnected to Sentinel');
-    });
-
-    this.redisClient.on('sentinelError', (err) => {
-      logger.error('Sentinel error:', err.message);
-      this.events.emit('connection-error', err);
-    });
-
-    // Key listener for sentinel master change
-    this.redisClient.on(
-      '+switch-master',
-      (
-        masterName: string,
-        oldHost: string,
-        oldPort: string,
-        newHost: string,
-        newPort: string
-      ) => {
-        if (masterName === this.config.masterName) {
-          logger.info(`Switch master detected: ${newHost}:${newPort}`);
-
-          // Update the current master info
-          this.currentMaster = { host: newHost, port: parseInt(newPort, 10) };
-
-          // Trigger a reconnection to the new master
-          this.handleFailover(true).catch((err) => {
-            logger.error('Failed to handle master switch:', err.message);
-          });
-        }
-      }
-    );
-  }
-
-  // Create and return a new Redis client
-  private createRedisClient(): Redis {
-    const redisOptions = this.directConnectionMode
-      ? {
-          host: this.redisHost,
-          port: this.config.port,
-          password: this.config.password,
-          maxRetriesPerRequest: 3,
-          enableReadyCheck: true,
-          connectionName: 'app-connection',
-          retryStrategy: (times: number) =>
-            times > 10 ? null : Math.min(times * 100, 3000),
-        }
-      : {
-          sentinels: this.sentinels,
-          name: this.config.masterName,
-          sentinelPassword: this.config.sentinelPassword,
-          password: this.config.password,
-          maxRetriesPerRequest: 3,
-          enableReadyCheck: true,
-          connectionName: 'app-connection',
-          retryStrategy: (times: number) =>
-            times > 10 ? null : Math.min(times * 100, 3000),
-          sentinelRetryStrategy: (times: number) => Math.min(times * 500, 5000),
-          // Enable auto-discovery of the leader
-          autoResendCommands: true,
-          // Enable reconnecting when master changes
-          reconnectOnError: (err: Error) => {
-            // Only reconnect if it's a read-only error or a connection error
-            return (
-              err.message.includes('READONLY') || this.isConnectionError(err)
-            );
-          },
+      if (Array.isArray(result) && result.length === 2) {
+        const master = {
+          host: result[0],
+          port: parseInt(result[1], 10),
         };
-
-    const redis = new Redis(redisOptions);
-
-    redis.on('connect', () => logger.info('Redis connection established'));
-    redis.on('ready', () => {
-      logger.info('Redis client ready');
-      this.retryCount = 0;
-      this.events.emit('client-ready', redis);
-    });
-
-    redis.on('error', this.handleRedisError.bind(this));
-    redis.on('end', () => this.events.emit('client-disconnected'));
-    redis.on('reconnecting', () => this.events.emit('client-reconnecting'));
-
-    this.setupSentinelEventListeners();
-
-    return redis;
-  }
-
-  // Handle Redis errors
-  private handleRedisError(err: Error): void {
-    logger.error('Redis client error:', err.message);
-    this.events.emit('client-error', err);
-
-    if (this.isConnectionError(err)) {
-      logger.warn('Connection error detected, attempting to reconnect');
-      this.events.emit('connection-error', err);
-
-      if (!this.isClosing) {
-        // Don't switch to direct mode immediately, try a reconnection first
-        this.handleFailover(true).catch((failoverErr) => {
-          logger.error(
-            `Failover after connection error failed: ${failoverErr.message}`
-          );
-          this.directConnectionMode = true;
-          this.gracefullyCloseConnections().catch((closeErr) => {
-            logger.error(`Error closing connections: ${closeErr.message}`);
-          });
-        });
+        console.log(
+          `Current master from Sentinel: ${master.host}:${master.port}`
+        );
+        return master;
       }
-    }
-  }
-
-  // Check if the error is a connection error
-  private isConnectionError(err: Error): boolean {
-    return [
-      'ETIMEDOUT',
-      'ECONNREFUSED',
-      'ENOTFOUND',
-      'READONLY',
-      'CONNECTION_BROKEN',
-    ].some((msg) => err.message.includes(msg));
-  }
-
-  // Get the Redis client (creates if not yet created)
-  public getRedisClient(): Redis {
-    if (!this.redisClient) {
-      this.redisClient = this.createRedisClient();
-    }
-    return this.redisClient;
-  }
-
-  // Get or initialize Redis OM client
-  public async getRedisOmClient(): Promise<Client> {
-    if (!this.redisOmClient || !this.redisOmClient.isOpen()) {
-      await this.initializeRedisOmClient();
-    }
-    return this.redisOmClient as Client;
-  }
-
-  // Initialize Redis OM client with current master address
-  private async initializeRedisOmClient(): Promise<Client> {
-    if (this.redisOmClient && this.redisOmClient.isOpen()) {
-      await this.redisOmClient.close();
-      logger.info('Closed existing Redis-OM client');
+    } catch (err) {
+      await sentinelClient.disconnect();
+      throw err;
     }
 
-    this.redisOmClient = new Client();
-    const masterAddress = await this.getMasterAddress();
-    this.currentMaster = masterAddress;
-
-    let redisUrl = `redis://${masterAddress.host}:${masterAddress.port}`;
-    if (this.config.password) {
-      redisUrl = `redis://:${encodeURIComponent(this.config.password)}@${
-        masterAddress.host
-      }:${masterAddress.port}`;
-    }
-
-    logger.info('Connecting Redis-OM to:', redisUrl);
-    await this.redisOmClient.open(redisUrl);
-
-    if (!this.redisOmClient.isOpen()) {
-      throw new Error('Redis-OM client failed to connect');
-    }
-
-    logger.info('Redis-OM client connected');
-    this.events.emit('om-client-initialized', this.redisOmClient);
-    this.retryCount = 0;
-    return this.redisOmClient;
-  }
-
-  // Start polling for Redis master failover
-  public startMasterPolling(): void {
-    if (this.pollInterval) clearInterval(this.pollInterval);
-
-    this.pollInterval = setInterval(
-      () => this.handleFailover(),
-      this.config.pollIntervalMs
+    console.log(
+      'Sentinel did not return expected result, using fallback connection'
     );
-    logger.info(
-      `Started master polling (interval: ${this.config.pollIntervalMs}ms)`
+    return { host: config.directHost, port: config.directPort };
+  } catch (err) {
+    console.error(
+      'Error getting master from Sentinel, using fallback connection:',
+      err
     );
+    return { host: config.directHost, port: config.directPort };
   }
+}
 
-  // Stop polling for Redis master failover
-  public stopMasterPolling(): void {
-    if (this.pollInterval) {
-      clearInterval(this.pollInterval);
-      this.pollInterval = null;
-      logger.info('Stopped master polling');
-    }
-  }
+// Function to check if master has changed
+async function shouldReconnect(): Promise<boolean> {
+  if (config.useDirectConnection) return false;
 
-  private async isCurrentMasterReachable(): Promise<boolean> {
-    if (!this.redisClient || !this.currentMaster) return false;
+  const now = Date.now();
+  if (now - lastMasterCheck < MASTER_CHECK_INTERVAL) return false;
 
-    try {
-      await this.redisClient.ping();
+  try {
+    const currentMaster = await getCurrentMaster();
+
+    const connInfo =
+      redisClient.status === 'ready'
+        ? { host: redisClient.options.host, port: redisClient.options.port }
+        : null;
+
+    if (
+      connInfo &&
+      (connInfo.host !== currentMaster.host ||
+        connInfo.port !== currentMaster.port)
+    ) {
+      console.log(
+        `Master changed from ${connInfo.host}:${connInfo.port} to ${currentMaster.host}:${currentMaster.port}`
+      );
       return true;
-    } catch (error: any) {
-      logger.warn('Current master is unreachable:', error.message);
-      return false;
-    }
-  }
-
-  // Handle failover and reconnect to the new master if necessary
-  private async handleFailover(forceReconnect = false): Promise<void> {
-    if (this.directConnectionMode && !forceReconnect) return;
-
-    try {
-      // Check if the current master is reachable or force a reconnect
-      const isMasterReachable = forceReconnect
-        ? false
-        : await this.isCurrentMasterReachable();
-
-      if (!isMasterReachable || forceReconnect) {
-        logger.warn(
-          'Current master is unreachable or reconnect forced, checking for new master'
-        );
-
-        // Get the latest master address
-        const { host, port } = await this.getMasterAddress();
-
-        // Check if it's different from the current master
-        const masterChanged =
-          !this.currentMaster ||
-          this.currentMaster.host !== host ||
-          this.currentMaster.port !== port;
-
-        if (masterChanged || forceReconnect) {
-          logger.info(`Master changed or reconnect forced: ${host}:${port}`);
-
-          // Store new master info first
-          this.currentMaster = { host, port };
-
-          // Close existing clients
-          if (this.redisOmClient) {
-            await this.redisOmClient.close();
-            this.redisOmClient = null;
-          }
-
-          if (this.redisClient) {
-            await this.redisClient.quit();
-            this.redisClient = null;
-          }
-
-          // Create new clients with the new master
-          this.redisClient = this.createRedisClient();
-          await this.initializeRedisOmClient();
-
-          this.events.emit('failover-complete', { host, port });
-          logger.info(`Reconnected to master at ${host}:${port}`);
-        }
-      }
-    } catch (err: any) {
-      logger.error('Failover handling failed:', err.message);
-      this.events.emit('failover-error', err);
-
-      // If failover fails multiple times, switch to direct connection mode
-      this.retryCount++;
-      if (
-        this.retryCount > this.config.maxRetries &&
-        !this.directConnectionMode
-      ) {
-        this.directConnectionMode = true;
-        logger.warn(
-          `Switching to direct connection mode after ${this.retryCount} failed attempts`
-        );
-
-        // Try a direct connection as a last resort
-        try {
-          if (this.redisClient) {
-            await this.redisClient.quit();
-            this.redisClient = null;
-          }
-
-          if (this.redisOmClient) {
-            await this.redisOmClient.close();
-            this.redisOmClient = null;
-          }
-
-          this.redisClient = this.createRedisClient();
-          await this.initializeRedisOmClient();
-
-          this.retryCount = 0;
-          logger.info('Successfully connected using direct connection mode');
-        } catch (directError: any) {
-          logger.error(`Direct connection also failed: ${directError.message}`);
-        }
-      }
-    }
-  }
-
-  private async validateSentinels(): Promise<boolean> {
-    if (this.directConnectionMode) return true;
-
-    for (const sentinel of this.sentinels) {
-      try {
-        const sentinelClient = new Redis({
-          host: sentinel.host,
-          port: sentinel.port,
-          password: this.config.sentinelPassword,
-          connectTimeout: this.config.connectionTimeout,
-        });
-
-        await sentinelClient.ping();
-        await sentinelClient.quit();
-        return true; // At least one Sentinel is reachable
-      } catch (error: any) {
-        logger.warn(
-          `Sentinel ${sentinel.host}:${sentinel.port} is unreachable: ${error.message}`
-        );
-      }
     }
 
-    logger.warn(
-      'All Sentinels are unreachable, switching to direct connection mode'
-    );
-    this.directConnectionMode = true;
     return false;
+  } catch (err) {
+    console.error('Error checking master status:', err);
+    return false;
+  } finally {
+    lastMasterCheck = now;
+  }
+}
+
+// Function to connect Redis-OM client
+export async function connectRedisOmClient(): Promise<void> {
+  if (isRedisOmConnected && redisOmClient.isOpen()) {
+    const shouldReconnectToMaster = await shouldReconnect();
+    if (!shouldReconnectToMaster) {
+      return;
+    }
+    console.log('Master has changed, reconnecting Redis-OM client');
+    isRedisOmConnected = false;
+    await redisOmClient.close().catch((err) => {
+      console.error('Error closing Redis-OM client before reconnection:', err);
+    });
   }
 
-  // Initialize Redis connections and handle failover
-  public async initialize(): Promise<void> {
+  if (!isRedisOmConnected && redisOmClient && !redisOmClient.isOpen()) {
+    console.log('Redis-OM client was closed, creating a new client');
+  }
+
+  let retries = 5;
+  while (retries > 0) {
     try {
-      await this.validateSentinels(); // Validate Sentinels before proceeding
+      let redisUrl: string;
 
-      // Get the initial master address
-      const masterAddress = await this.getMasterAddress();
-      this.currentMaster = masterAddress;
-
-      // Initialize clients
-      this.redisClient = this.createRedisClient();
-      await this.initializeRedisOmClient();
-
-      // Start failover detection if not in direct mode
-      if (!this.directConnectionMode) {
-        this.startMasterPolling();
-      }
-
-      logger.info('Redis connection manager initialized');
-      this.events.emit('initialization-complete');
-    } catch (error: any) {
-      logger.error('Initialization failed:', error.message);
-      this.events.emit('initialization-failed', error);
-
-      if (!this.directConnectionMode) {
-        this.directConnectionMode = true;
+      if (!config.useDirectConnection) {
         try {
-          this.redisClient = this.createRedisClient();
-          await this.initializeRedisOmClient();
+          const masterInfo = await getCurrentMaster();
+          const host = masterInfo.host;
+          const port = masterInfo.port;
 
-          logger.info('Initialized with direct connection');
-          this.events.emit('initialization-complete');
-        } catch (directError: any) {
-          logger.error('Direct connection failed:', directError.message);
-          this.events.emit('initialization-failed', directError);
-          throw directError;
+          redisUrl = config.password
+            ? `redis://:${encodeURIComponent(config.password)}@${host}:${port}`
+            : `redis://${host}:${port}`;
+        } catch (err) {
+          console.log(
+            'Failed to get Sentinel master, falling back to direct connection'
+          );
+          redisUrl = config.password
+            ? `redis://:${encodeURIComponent(config.password)}@${
+                config.directHost
+              }:${config.directPort}`
+            : `redis://${config.directHost}:${config.directPort}`;
         }
       } else {
-        throw error;
-      }
-    }
-  }
-
-  // Gracefully shutdown connections
-  public async shutdown(): Promise<void> {
-    this.stopMasterPolling();
-
-    try {
-      if (this.redisOmClient) {
-        await this.redisOmClient.close();
-        this.redisOmClient = null;
+        redisUrl = config.password
+          ? `redis://:${encodeURIComponent(config.password)}@${
+              config.directHost
+            }:${config.directPort}`
+          : `redis://${config.directHost}:${config.directPort}`;
       }
 
-      if (this.redisClient) {
-        await this.redisClient.quit();
-        this.redisClient = null;
+      console.log(
+        `Connecting Redis-OM to: ${redisUrl.replace(/:[^:]*@/, ':****@')}`
+      );
+
+      if (redisOmClient.isOpen()) {
+        await redisOmClient.close();
       }
 
-      logger.info('Redis connections shut down');
-      this.events.emit('shutdown-complete');
-    } catch (err: any) {
-      logger.error('Error shutting down Redis connections:', err.message);
-      this.events.emit('shutdown-error', err);
-    }
-  }
+      await redisOmClient.open(redisUrl);
 
-  // Gracefully close connections during failures
-  public async gracefullyCloseConnections(): Promise<void> {
-    if (this.isClosing) return;
-
-    this.isClosing = true;
-    logger.warn('Gracefully closing Redis connections due to issues');
-
-    this.stopMasterPolling();
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-
-    try {
-      const closePromises = [];
-
-      if (this.redisOmClient) {
-        closePromises.push(this.redisOmClient.close());
+      if (!redisOmClient.isOpen()) {
+        throw new Error('Redis-OM client is not open after connection attempt');
       }
 
-      if (this.redisClient) {
-        closePromises.push(this.redisClient.quit());
+      console.log('Redis-OM client connected successfully');
+      isRedisOmConnected = true;
+      lastMasterCheck = Date.now();
+      return;
+    } catch (err) {
+      console.error('Failed to connect Redis-OM client:', err);
+      retries--;
+      if (retries === 0) {
+        throw err;
       }
-
-      // Also close all sentinel clients
-      this.activeSentinelClients.forEach((client) => {
-        closePromises.push(client.disconnect(true));
-      });
-
-      await Promise.all(closePromises);
-
-      this.redisOmClient = null;
-      this.redisClient = null;
-      this.activeSentinelClients = [];
-
-      logger.info('All Redis connections closed');
-      this.events.emit('connections-closed');
-
-      this.reconnectTimer = setTimeout(() => {
-        this.isClosing = false;
-        this.initialize().catch((err) => {
-          logger.error('Reconnect failed:', err.message);
-        });
-      }, 5000); // Retry reconnecting after 5 seconds
-    } catch (err: any) {
-      logger.error('Error during graceful connection close:', err.message);
-    } finally {
-      this.isClosing = false;
+      console.log(`Retrying in 5 seconds... (${retries} retries left)`);
+      await new Promise((resolve) => setTimeout(resolve, 5000));
     }
   }
 }
 
-// Singleton instance
-export const redisManager = RedisConnectionManager.getInstance();
-
-// Initialize Redis at application startup
-export async function initializeRedisConnections(): Promise<void> {
-  await redisManager.initialize();
+export async function ensureMasterConnection(): Promise<void> {
+  isRedisOmConnected = false; // Force check and reconnect
+  await connectRedisOmClient();
 }
 
-// For backward compatibility
-export async function initializeRedisClient(): Promise<Redis> {
-  return redisManager.getRedisClient();
-}
-
-export async function initializeRedisOmClient(): Promise<Client> {
-  return redisManager.getRedisOmClient();
-}
+// Export public APIs
+export { redisClient, redisOmClient };

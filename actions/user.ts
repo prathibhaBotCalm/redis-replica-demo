@@ -1,24 +1,18 @@
 'use server';
 
-import { initializeUserRepository } from '@/schema/user';
-
-let cachedUserRepository: Awaited<
-  ReturnType<typeof initializeUserRepository>
-> | null = null;
-
-// Initialize the user repository once and cache it
-async function getUserRepository() {
-  if (!cachedUserRepository) {
-    cachedUserRepository = await initializeUserRepository();
-  }
-  return cachedUserRepository;
-}
+import { ensureMasterConnection } from '@/lib/redis';
+import { userRepository } from '@/schema/user';
 
 // Function to get all users
 export async function getUsers() {
   try {
-    const userRepository = await getUserRepository();
-    const users = await userRepository.search().returnAll();
+    await ensureMasterConnection();
+    const repo = await userRepository;
+    // Check if the repository is defined and initialized
+    if (!repo) {
+      throw new Error('User repository is not initialized.');
+    }
+    const users = await repo.search().returnAll();
     const usersPlain = JSON.parse(JSON.stringify(users));
 
     return {
@@ -39,9 +33,11 @@ export async function getUsers() {
 // Function to create a new user
 export async function createUser(name: string, email?: string, age?: number) {
   try {
-    const userRepository = await getUserRepository();
     const id = Math.random().toString(36).substr(2, 9);
-    const user = await userRepository.save({ id, name, email, age });
+    await ensureMasterConnection();
+
+    const repo = await userRepository;
+    const user = await repo.save({ id, name, email, age });
     return {
       status: 200,
       msg: 'success',
@@ -59,15 +55,16 @@ export async function createUser(name: string, email?: string, age?: number) {
 
 export async function deleteUser(id: string) {
   try {
-    const userRepository = await getUserRepository();
+    const repo = await userRepository;
+    await ensureMasterConnection();
 
     // Make sure you're passing the correct ID
-    const user = await userRepository.fetch(id); // This fetches the user by ID to ensure the user exists
+    const user = await repo.fetch(id);
     if (!user) {
       throw new Error('User not found');
     }
 
-    await userRepository.remove(user.entityId); // Use entityId to remove the user
+    await repo.remove(id);
     return { status: 200, msg: 'User deleted successfully' };
   } catch (error: any) {
     console.error('Error deleting user:', error);
