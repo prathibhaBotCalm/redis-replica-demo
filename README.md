@@ -1,125 +1,198 @@
-# 🚀 Dockerized Next.js & Redis Setup
+# Next.js with Redis HA (High Availability)
 
-This repository provides a **Docker Compose setup** for a Next.js application using Redis with Sentinel for high availability. It supports both **development** and **production** environments.
+This project demonstrates a robust Next.js application with Redis High Availability using Redis Sentinel for automatic failover. It includes comprehensive monitoring with Prometheus and Grafana, as well as a canary deployment system.
 
----
+## Features
 
-## 📂 Folder Structure
+- **Next.js Application**: Modern React application with server-side rendering
+- **Redis High Availability**: Redis Sentinel setup with automatic master-slave failover
+- **Redis Object Mapping**: Persistent data storage using Redis-OM
+- **CI/CD Pipeline**: GitHub Actions workflow for continuous integration and deployment
+- **Canary Deployments**: Gradual rollout of new versions with automated promotion/rollback
+- **Monitoring**: Prometheus metrics and Grafana dashboards
+- **Containerization**: Docker-based deployment with Docker Compose
+
+## Architecture
+
+The application uses a Redis Sentinel architecture for high availability:
+
+- 1 Redis master node
+- 4 Redis replica (slave) nodes
+- 3 Redis Sentinel nodes monitoring the cluster
+- Automatic failover when the master becomes unavailable
+- Resilient connection management to handle master changes
+
+![Redis HA Architecture](docs/redis-ha-architecture.png)
+
+## Prerequisites
+
+- Docker and Docker Compose
+- Node.js 18+ (for local development)
+- Git
+
+## Quick Start
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/prathibhaBotCalm/redis-replica-demo.git
+   cd redis-replica-demo
+   ```
+
+2. Create a `.env` file based on the provided example:
+   ```bash
+   cp .env.example .env
+   ```
+
+3. Start the application in development mode:
+   ```bash
+   docker-compose --profile development up -d
+   ```
+
+4. Access the application at http://localhost:3000
+
+## Environment Configuration
+
+The application supports different environments through the `.env` file:
+
 ```
-.
-├── docker-compose.yml          # Base configuration
-├── docker-compose.override.yml # Development overrides (hot-reloading)
-├── docker-compose.prod.yml     # Production optimizations
-├── .env                        # Environment variables (create manually)
-├── Dockerfile                  # Multi-stage Dockerfile
-├── backup/
-│   └── dump.rdb                 # Redis backup data
-└── init-master.sh               # Redis master initialization script
-```
-
----
-
-## ⚙️ Setup & Configuration
-
-### 1️⃣ **Create an `.env` file** (if not already present)
-Copy the following into `.env` and update values as needed:
-
-```ini
 # Next.js Application
-NODE_ENV=production
 APP_PORT=3000
 
 # Redis Configuration
+REDIS_SENTINELS_DEV=157.230.253.3:26379,157.230.253.3:26380,157.230.253.3:26381
+REDIS_SENTINELS_PROD=sentinel-1:26379,sentinel-2:26380,sentinel-3:26381
+REDIS_HOST_DEV=157.230.253.3
+REDIS_HOST_PROD=redis-master
+REDIS_PORT=6379
 REDIS_MASTER_NAME=mymaster
 REDIS_PASSWORD=your_redis_password
+REDIS_SENTINEL_PASSWORD=your_redis_password
 REDIS_SENTINEL_QUORUM=2
 
-# Sentinel Ports
-SENTINEL_1_PORT=26379
-SENTINEL_2_PORT=26380
-SENTINEL_3_PORT=26381
+# Set to "true" for development environment
+IS_DEV=false
 
-# Redis Ports
-REDIS_MASTER_PORT=6379
-REDIS_SLAVE_1_PORT=6380
-REDIS_SLAVE_2_PORT=6381
+# Canary Deployment Settings
+CANARY_WEIGHT=20
 ```
 
----
+## Deployment Environments
 
-## 🚀 Running the Application
+### Development
 
-### **Development Mode** (Hot-Reloading)
-```sh
-docker-compose up --build
-```
-- Uses `docker-compose.override.yml`
-- Runs `yarn dev` for fast development
-- Mounts local files for live changes
-
-### **Production Mode** (Optimized for Deployment)
-```sh
-docker-compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
-```
-- Uses `docker-compose.prod.yml`
-- Runs `yarn start` with minimal resource usage
-- Applies **CPU & memory limits**
-
-### **Stopping Services**
-```sh
-docker-compose down
-```
-Stops and removes containers.
-
----
-
-## 🏗️ Dockerfile Structure
-This setup uses a **multi-stage Dockerfile** for efficient builds:
-1. **Base Stage** → Installs dependencies.
-2. **Development Stage** → Runs `yarn dev` with live reload.
-3. **Build Stage** → Compiles the Next.js app.
-4. **Production Stage** → Copies necessary files for deployment.
-
----
-
-## 🛠️ Managing Redis
-### **Check Redis Master Health**
-```sh
-docker exec -it <redis-master-container-id> redis-cli -a your_redis_password ping
+```bash
+docker-compose --profile development up -d
 ```
 
-### **Check Sentinel Status**
-```sh
-docker exec -it <sentinel-container-id> redis-cli -p 26379 info Sentinel
+This starts a local development environment with:
+- Next.js application with hot-reloading
+- Redis master, replicas, and sentinels
+- No monitoring stack (for improved performance)
+
+### Production
+
+```bash
+docker-compose --profile production up -d
 ```
 
-### **Manually Trigger a Failover**
-```sh
-docker exec -it <sentinel-container-id> redis-cli -p 26379 sentinel failover mymaster
-```
+This starts a full production environment with:
+- Next.js application optimized for production
+- Redis HA cluster with automatic failover
+- Prometheus and Grafana monitoring
+- Redis exporters for detailed metrics
 
----
+## Redis Failover Management
 
+The application includes a robust connection manager that handles Redis master failover events:
 
-## 📌 Troubleshooting
-### **1️⃣ Cannot Connect to Redis?**
-- Ensure `REDIS_PASSWORD` is correctly set in `.env`.
-- Run `docker ps` and check if all containers are running.
-- Check Redis logs:
-  ```sh
-  docker logs <redis-master-container-id>
-  ```
+1. Sentinel monitors Redis master health
+2. If master fails, sentinel promotes a replica to become the new master
+3. The connection manager detects the master change and reconnects automatically
+4. Application continues normal operation with minimal disruption
 
-### **2️⃣ Next.js Not Updating in Dev Mode?**
-- Ensure the volume `- .:/app` is correctly mounted.
-- Try removing old containers:
-  ```sh
-  docker-compose down && docker-compose up --build
-  ```
+## Monitoring
 
----
+### Prometheus
 
-## 🎯 Summary
-- **Development Mode:** `docker-compose up --build`
-- **Production Mode:** `docker-compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d`
-- **Stop Containers:** `docker-compose down`
+Access Prometheus at http://localhost:9090
+
+### Grafana
+
+Access Grafana at http://localhost:3005
+
+Default credentials:
+- Username: `admin`
+- Password: `admin`
+
+Pre-configured dashboards include:
+- Redis Master/Replica status
+- Redis performance metrics
+- Application metrics
+- Node.js runtime metrics
+
+## CI/CD Pipeline
+
+The project includes a GitHub Actions pipeline for CI/CD:
+
+1. Code quality and testing
+2. Docker image build
+3. Staging deployment
+4. Canary production deployment
+5. Canary promotion or rollback
+
+## Canary Deployments
+
+The system supports canary deployments for safe production releases:
+
+1. New version deployed alongside existing version
+2. Traffic split according to CANARY_WEIGHT setting
+3. Monitoring for errors in the canary version
+4. Automatic or manual promotion when stable
+5. Automatic rollback if issues detected
+
+## Backup and Recovery
+
+The Redis data is automatically backed up:
+
+1. Periodic RDB snapshots stored in `./backup` directory
+2. Backup rotation to prevent disk space issues
+3. Automatic recovery from latest backup during startup
+
+## Troubleshooting
+
+### Redis Connection Issues
+
+If you experience connection issues after a Redis failover:
+
+1. Check Redis Sentinel logs:
+   ```bash
+   docker-compose logs sentinel-1 sentinel-2 sentinel-3
+   ```
+
+2. Verify the current Redis master:
+   ```bash
+   docker-compose exec sentinel-1 redis-cli -p 26379 SENTINEL get-master-addr-by-name mymaster
+   ```
+
+3. Check application logs for connection errors:
+   ```bash
+   docker-compose logs app
+   ```
+
+### Monitoring Stack Issues
+
+If Grafana or Prometheus is not accessible:
+
+1. Verify the services are running:
+   ```bash
+   docker-compose ps prometheus grafana
+   ```
+
+2. Check logs for any errors:
+   ```bash
+   docker-compose logs prometheus grafana
+   ```
+
+## License
+
+[MIT](LICENSE)
