@@ -1,29 +1,48 @@
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+  scrape_timeout: 10s
 
+# Define reusable scrape configurations
 scrape_configs:
   # Scrape Prometheus itself
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
 
-  # Scrape the application (Next.js) metrics on port 3000
+  # Scrape the application (Next.js) metrics
   - job_name: 'app'
     metrics_path: '/api/metrics'
+    scrape_interval: 10s
     static_configs:
       - targets: ['app:3000']
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'nodejs_.*'
+        action: keep
 
-  # Scrape Grafana metrics (if enabled) on /metrics endpoint
+  # Scrape Node.js runtime metrics (handled by the app metrics endpoint)
+  - job_name: 'nodejs'
+    metrics_path: '/api/metrics'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['app:3000']
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'nodejs_.*'
+        action: keep
+
+  # Scrape Grafana metrics
   - job_name: 'grafana'
     metrics_path: '/metrics'
     scrape_interval: 15s
     static_configs:
       - targets: ['grafana:3000']
 
-  # Scrape Redis metrics from master and slaves (adjust port if necessary)
-  - job_name: 'redis'
+  # Scrape Redis exporters (masters and replicas)
+  - job_name: 'redis_exporter'
     metrics_path: '/metrics'
+    scrape_interval: 10s
     static_configs:
       - targets:
           [
@@ -33,3 +52,41 @@ scrape_configs:
             'redis-exporter-slave3:9121',
             'redis-exporter-slave4:9121',
           ]
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'redis_.*'
+        action: keep
+
+  # Scrape actual Redis instances (for direct instance health)
+  - job_name: 'redis_instances'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    static_configs:
+      - targets:
+          [
+            'redis-master:9121',  # If Redis exposes metrics directly
+            'redis-slave-1:9121',
+            'redis-slave-2:9121',
+            'redis-slave-3:9121',
+            'redis-slave-4:9121',
+          ]
+
+  # System metrics for all containers
+  - job_name: 'cadvisor'
+    scrape_interval: 15s
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['cadvisor:9100']  # Assumes you've added cadvisor
+
+  # Redis sentinel monitoring (if exposing metrics)
+  - job_name: 'sentinel'
+    scrape_interval: 10s
+    metrics_path: '/metrics'
+    static_configs:
+      - targets:
+          [
+            'sentinel-exporter-1:9121',  # If using sentinel exporters
+            'sentinel-exporter-2:9121',
+            'sentinel-exporter-3:9121',
+          ]
+    # Optional - only if your environment has sentinel exporters

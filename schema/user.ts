@@ -1,32 +1,6 @@
-// // user.repository.ts
-// import { initializeRepository } from '@/utils/repository.util';
-// import { Entity } from 'redis-om';
-
-// // Define the User entity interface
-// interface UserEntity extends Entity {
-//   id: string;
-//   name: string;
-//   email?: string;
-//   age?: number;
-// }
-
-// // Define the schema with explicit indexing
-// const userSchema = {
-//   id: { type: 'string', indexed: true },
-//   name: { type: 'string', indexed: true },
-//   email: { type: 'string', indexed: true },
-//   age: { type: 'number', indexed: true },
-// };
-
-// // Initialize the user repository
-// export const userRepository = initializeRepository<UserEntity>(
-//   'User',
-//   userSchema
-// );
-
+import * as baseLogger from '@/lib/logger';
 import { initializeRepository } from '@/utils/repository.util';
 import { Entity } from 'redis-om';
-import * as baseLogger from '@/lib/logger';
 
 const logger = baseLogger.createContextLogger('UserSchema');
 
@@ -50,7 +24,7 @@ export const userSchema = {
  * Get the user repository instance
  * This approach ensures we get a fresh repository connected to the current master
  */
-export async function getUserRepository() {
+export async function initUserRepository() {
   try {
     return await initializeRepository<UserEntity>('User', userSchema);
   } catch (error) {
