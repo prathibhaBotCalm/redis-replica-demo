@@ -38,6 +38,12 @@ services:
     profiles:
       - production
       - development
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
 
   redis-slave-1:
     image: redis/redis-stack:latest
@@ -59,6 +65,12 @@ services:
     profiles:
       - production
       - development
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 128M
 
   redis-slave-2:
     image: redis/redis-stack:latest
@@ -80,6 +92,12 @@ services:
     profiles:
       - production
       - development
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 128M
 
   redis-slave-3:
     image: redis/redis-stack:latest
@@ -101,6 +119,12 @@ services:
     profiles:
       - production
       - development
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 128M
 
   redis-slave-4:
     image: redis/redis-stack:latest
@@ -122,6 +146,12 @@ services:
     profiles:
       - production
       - development
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 128M
 
       # Add Redis exporters
   redis-exporter-master:
@@ -229,46 +259,93 @@ services:
       - production
       - development
 
+  # Backup service for Redis data
   redis-backup:
-    image: alpine
+    image: alpine:latest
     volumes:
-      - redis-data:/data
+      - redis-data:/data:ro
       - ./backup:/backup
       - ./scripts/backup.sh:/scripts/backup.sh:ro
+    environment:
+      - BACKUP_INTERVAL=600  # 10 minutes
+      - MAX_BACKUPS=7        # Keep 7 days of backups
     networks:
       - redis-network
     entrypoint: ['/bin/sh', '/scripts/backup.sh']
+    depends_on:
+      redis-master:
+        condition: service_healthy
     profiles:
       - production
       - development
 
+  # Monitoring stack
   prometheus:
     image: prom/prometheus:latest
-    container_name: prometheus
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
     ports:
       - "9090:9090"
     networks:
       - monitoring-network
       - redis-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     profiles:
       - production
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   grafana:
     image: grafana/grafana:latest
-    container_name: grafana
-    ports:
-      - "3005:3000"  # Map Grafana container port 3000 to host port 3005
-    networks:
-      - monitoring-network
     volumes:
       - grafana-data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/grafana/
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+    ports:
+      - "3005:3000"
+    networks:
+      - monitoring-network
     restart: unless-stopped
+    depends_on:
+      prometheus:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     profiles:
       - production
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
 volumes:
   redis-data:
+    driver: local
   grafana-data:
+    driver: local
+  prometheus-data:
+    driver: local
