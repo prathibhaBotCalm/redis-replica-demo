@@ -17,6 +17,7 @@ scrape_configs:
   # Scrape Grafana metrics (if enabled) on /metrics endpoint
   - job_name: 'grafana'
     metrics_path: '/metrics'
+    scrape_interval: 15s
     static_configs:
       - targets: ['grafana:3000']
 
@@ -28,5 +29,7 @@ scrape_configs:
           [
             'redis-exporter-master:9121',
             'redis-exporter-slave1:9121',
-            'redis-exporter-slave2:9121'
+            'redis-exporter-slave2:9121',
+            'redis-exporter-slave3:9121',
+            'redis-exporter-slave4:9121',
           ]

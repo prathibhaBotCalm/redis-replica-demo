@@ -159,7 +159,7 @@ services:
     container_name: redis-exporter-master
     environment:
       - REDIS_ADDR=redis://redis-master:6379
-      # - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
     networks:
       - redis-network
       - monitoring-network
@@ -174,7 +174,7 @@ services:
     container_name: redis-exporter-slave1
     environment:
       - REDIS_ADDR=redis://redis-slave-1:6379
-      # - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
     networks:
       - redis-network
       - monitoring-network
@@ -183,13 +183,15 @@ services:
     restart: unless-stopped
     profiles:
       - production
+    depends_on:
+      - redis-slave-1
 
   redis-exporter-slave2:
     image: oliver006/redis_exporter
     container_name: redis-exporter-slave2
     environment:
       - REDIS_ADDR=redis://redis-slave-2:6379
-      # - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
     networks:
       - redis-network
       - monitoring-network
@@ -198,6 +200,43 @@ services:
     restart: unless-stopped
     profiles:
       - production
+    depends_on:
+      - redis-slave-2
+
+  redis-exporter-slave3:
+    image: oliver006/redis_exporter
+    container_name: redis-exporter-slave3
+    environment:
+      - REDIS_ADDR=redis://redis-slave-3:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    networks:
+      - redis-network
+      - monitoring-network
+    ports:
+      - "9124:9121"  # Expose internal port 9121 on host port 9123
+    restart: unless-stopped
+    profiles:
+      - production
+    depends_on:
+      - redis-slave-3
+    
+  redis-exporter-slave4:
+    image: oliver006/redis_exporter
+    container_name: redis-exporter-slave4
+    environment:
+      - REDIS_ADDR=redis://redis-slave-4:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    networks:
+      - redis-network
+      - monitoring-network
+    ports:
+      - "9125:9121"  # Expose internal port 9121 on host port 9123
+    restart: unless-stopped
+    profiles:
+      - production
+    depends_on:
+      - redis-slave-4
+        
 
   sentinel-1:
     image: bitnami/redis-sentinel:latest
@@ -312,17 +351,22 @@ services:
 
   grafana:
     image: grafana/grafana:latest
+    environment:
+      - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/grafana
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+      - GF_METRICS_ENABLED=true
+      - GF_METRICS_BASIC_AUTH_ENABLED=false
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    ports:
+      - "3005:3000"  # Map Grafana container port 3000 to host port 3005
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/grafana/
-      - GF_SERVER_SERVE_FROM_SUB_PATH=true
-    ports:
-      - "3005:3000"
     networks:
       - monitoring-network
     restart: unless-stopped
