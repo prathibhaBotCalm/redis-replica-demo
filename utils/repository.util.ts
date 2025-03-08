@@ -8,40 +8,87 @@ import { Entity, Repository, Schema } from 'redis-om';
 
 const logger = baseLogger.createContextLogger('RepositoryUtil');
 
+// Constants for configuration
+const DEFAULT_MAX_RETRIES = 3;
+const DEFAULT_CACHE_TTL_MS = 300000; // 5 minutes cache validity
+const DEFAULT_BACKOFF_BASE_MS = 500;
+const DEFAULT_BACKOFF_MAX_MS = 5000;
+
+// Repository cache with additional metadata
+interface CachedRepository<T extends Entity> {
+  repository: Repository<T>;
+  timestamp: number; // When this repository was cached
+  lastUsed: number; // Last time this repository was used
+  validationCount: number; // Number of times validation was performed
+}
+
 // Map to store initialized repositories by schema name
-const repositoryCache: Map<string, Repository<any>> = new Map();
+const repositoryCache = new Map<string, CachedRepository<any>>();
 
 // Track index creation status to avoid redundant operations
-const indexCreationStatus: Map<string, Promise<void>> = new Map();
+const indexCreationStatus = new Map<string, Promise<void>>();
 
 /**
  * Initialize a repository for a given schema and create its indexes.
+ *
  * @param schemaName - The name of the schema (e.g., 'User').
  * @param schemaDefinition - The schema definition.
+ * @param options - Additional options for repository initialization
  * @returns The initialized repository.
  */
 export async function initializeRepository<T extends Entity>(
   schemaName: string,
-  schemaDefinition: Record<string, any>
+  schemaDefinition: Record<string, any>,
+  options: {
+    forceRefresh?: boolean;
+    cacheTtlMs?: number;
+    maxRetries?: number;
+  } = {}
 ): Promise<Repository<T>> {
+  const {
+    forceRefresh = false,
+    cacheTtlMs = DEFAULT_CACHE_TTL_MS,
+    maxRetries = DEFAULT_MAX_RETRIES,
+  } = options;
+
+  const now = Date.now();
   logger.debug(`Initializing repository for schema: ${schemaName}`);
 
-  // Check if we already have this repository cached
-  if (repositoryCache.has(schemaName)) {
-    const cachedRepo = repositoryCache.get(schemaName) as Repository<T>;
+  // Check if we already have this repository cached and it's not forced to refresh
+  if (!forceRefresh && repositoryCache.has(schemaName)) {
+    const cachedRepo = repositoryCache.get(schemaName)!;
 
-    try {
-      // Verify the repository connection is still valid with a simple operation
-      await cachedRepo.search().return.count();
-      logger.debug(`Using cached repository for schema: ${schemaName}`);
-      return cachedRepo;
-    } catch (err) {
-      logger.warn(
-        `Cached repository for ${schemaName} is invalid, recreating:`,
-        err
+    // Check if the cache is still valid based on TTL
+    if (now - cachedRepo.timestamp < cacheTtlMs) {
+      try {
+        // Verify the repository connection is still valid with a simple operation
+        await cachedRepo.repository.search().return.count();
+
+        // Update usage metadata
+        cachedRepo.lastUsed = now;
+        cachedRepo.validationCount++;
+        repositoryCache.set(schemaName, cachedRepo);
+
+        logger.debug(
+          `Using cached repository for schema: ${schemaName} (validated ${cachedRepo.validationCount} times)`
+        );
+        return cachedRepo.repository as Repository<T>;
+      } catch (err) {
+        logger.warn(
+          `Cached repository for ${schemaName} is invalid despite being within TTL, recreating:`,
+          err
+        );
+        // Continue with creating a new repository
+      }
+    } else {
+      logger.debug(
+        `Cached repository for ${schemaName} expired (age: ${
+          (now - cachedRepo.timestamp) / 1000
+        }s), refreshing`
       );
-      // Continue with creating a new repository
     }
+  } else if (forceRefresh) {
+    logger.debug(`Forced refresh requested for repository: ${schemaName}`);
   }
 
   // Ensure Redis-OM client is connected and pointing to the current master
@@ -60,8 +107,12 @@ export async function initializeRepository<T extends Entity>(
   const schema = new Schema(schemaName, schemaDefinition);
   logger.debug(`Schema created for: ${schemaName}`);
 
-  // Create the repository
-  const repository = redisOmClient?.fetchRepository(schema as Schema<T>);
+  // Create the repository - Verify redisOmClient exists first
+  if (!redisOmClient) {
+    throw new Error('Redis OM client is not initialized');
+  }
+
+  const repository = redisOmClient.fetchRepository(schema as Schema<T>);
   logger.debug(`Repository created for: ${schemaName}`);
 
   // Handle index creation
@@ -73,7 +124,8 @@ export async function initializeRepository<T extends Entity>(
       indexPromise = createIndexSafely(
         repository as Repository<T>,
         schemaName,
-        schemaDefinition
+        schemaDefinition,
+        maxRetries
       );
       indexCreationStatus.set(schemaName, indexPromise);
 
@@ -89,8 +141,19 @@ export async function initializeRepository<T extends Entity>(
 
     await indexPromise;
 
-    // Cache the repository for future use
-    repositoryCache.set(schemaName, repository as Repository<T>);
+    // Cache the repository with metadata for future use
+    repositoryCache.set(schemaName, {
+      repository: repository as Repository<T>,
+      timestamp: now,
+      lastUsed: now,
+      validationCount: 0,
+    });
+
+    // If cache is getting too large, perform cache cleanup
+    if (repositoryCache.size > 50) {
+      // Arbitrary limit, adjust as needed
+      cleanupRepositoryCache();
+    }
 
     return repository as Repository<T>;
   } catch (err) {
@@ -104,17 +167,19 @@ export async function initializeRepository<T extends Entity>(
 
 /**
  * Create index safely with improved error handling
+ *
  * @param repository - The repository to create indexes for.
  * @param schemaName - The name of the schema being used.
  * @param schemaDefinition - The schema definition used to create the repository.
+ * @param maxRetries - Maximum number of retry attempts
  */
 async function createIndexSafely<T extends Entity>(
   repository: Repository<T>,
   schemaName: string,
-  schemaDefinition: Record<string, any>
+  schemaDefinition: Record<string, any>,
+  maxRetries: number
 ): Promise<void> {
   const indexName = `${schemaName}Idx`;
-  const maxRetries = 3;
   let retries = 0;
 
   const normalizedSchemaDefinition = { ...schemaDefinition };
@@ -129,7 +194,9 @@ async function createIndexSafely<T extends Entity>(
           retries + 1
         }/${maxRetries})`
       );
+
       await repository.createIndex();
+
       logger.info(
         `Repository index created successfully for schema: ${schemaName}`
       );
@@ -145,46 +212,108 @@ async function createIndexSafely<T extends Entity>(
         return;
       }
 
-      logger.warn(`Index creation failed for schema: ${schemaName}:`, err);
+      // Handle specific Redis error types
+      if (isConnectionError(err)) {
+        logger.error(
+          `Redis connection error during index creation: ${err.message}`
+        );
+        // For connection errors, we might want to retry with ensureMasterConnection first
+        try {
+          await ensureMasterConnection();
+        } catch (masterErr) {
+          logger.error(
+            `Failed to reconnect to Redis master: ${
+              masterErr instanceof Error ? masterErr.message : String(masterErr)
+            }`
+          );
+        }
+      } else {
+        logger.warn(`Index creation failed for schema: ${schemaName}:`, err);
+      }
 
       if (retries >= maxRetries) {
-        // Try dropping and recreating index as last resort
-        try {
-          logger.debug(
-            `Attempting to drop and recreate index for schema: ${schemaName}`
-          );
-          await dropIndex(indexName);
-          await repository.createIndex();
-          logger.info(
-            `Repository index recreated successfully for schema: ${schemaName}`
-          );
-          return;
-        } catch (dropErr: any) {
-          logger.error(
-            `Failed to drop and recreate index for schema: ${schemaName}:`,
-            dropErr
-          );
-
-          // Fall back to direct FT.CREATE command
-          try {
-            await createIndexDirectly(schemaName, normalizedSchemaDefinition);
-            return;
-          } catch (directErr: any) {
-            logger.error(
-              `Direct index creation failed for schema: ${schemaName}:`,
-              directErr
-            );
-            throw directErr;
-          }
-        }
+        // Try alternative approaches when regular creation fails
+        return await attemptFallbackIndexCreation(
+          repository,
+          schemaName,
+          indexName,
+          normalizedSchemaDefinition
+        );
       }
 
       // Wait before retrying (exponential backoff)
-      const delay = Math.min(Math.pow(2, retries) * 500, 5000);
+      const delay = Math.min(
+        Math.pow(2, retries) * DEFAULT_BACKOFF_BASE_MS,
+        DEFAULT_BACKOFF_MAX_MS
+      );
       logger.debug(
         `Retrying index creation in ${delay}ms for schema: ${schemaName}`
       );
       await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
+/**
+ * Determine if an error is a connection-related error
+ *
+ * @param err - The error to check
+ * @returns True if this is a connection error
+ */
+function isConnectionError(err: any): boolean {
+  if (!err || !err.message) return false;
+
+  const msg = err.message.toLowerCase();
+  return (
+    msg.includes('econnrefused') ||
+    msg.includes('etimedout') ||
+    msg.includes('enotfound') ||
+    msg.includes('connection closed') ||
+    msg.includes('readonly') ||
+    msg.includes('connection needs to be open')
+  );
+}
+
+/**
+ * Attempts different fallback approaches to create an index when the standard approach fails
+ */
+async function attemptFallbackIndexCreation<T extends Entity>(
+  repository: Repository<T>,
+  schemaName: string,
+  indexName: string,
+  normalizedSchemaDefinition: Record<string, any>
+): Promise<void> {
+  // Try dropping and recreating index as first fallback
+  try {
+    logger.debug(
+      `Attempting to drop and recreate index for schema: ${schemaName}`
+    );
+    await dropIndex(indexName);
+    await repository.createIndex();
+    logger.info(
+      `Repository index recreated successfully for schema: ${schemaName}`
+    );
+    return;
+  } catch (dropErr: any) {
+    logger.error(
+      `Failed to drop and recreate index for schema: ${schemaName}:`,
+      dropErr
+    );
+
+    // Fall back to direct FT.CREATE command as second fallback
+    try {
+      logger.debug(`Attempting direct FT.CREATE for schema: ${schemaName}`);
+      await createIndexDirectly(schemaName, normalizedSchemaDefinition);
+      logger.info(`Created index directly for schema: ${schemaName}`);
+      return;
+    } catch (directErr: any) {
+      logger.error(
+        `Direct index creation failed for schema: ${schemaName}:`,
+        directErr
+      );
+
+      // All approaches failed, throw the error
+      throw directErr;
     }
   }
 }
@@ -222,8 +351,12 @@ function ensureIndexedFields(schemaDefinition: Record<string, any>): void {
  * Drop an index using direct Redis commands
  */
 async function dropIndex(indexName: string): Promise<void> {
+  if (!redisClient) {
+    throw new Error('Redis client is not initialized');
+  }
+
   try {
-    await redisClient?.call('FT.DROPINDEX', indexName);
+    await redisClient.call('FT.DROPINDEX', indexName);
     logger.debug(`Successfully dropped index: ${indexName}`);
   } catch (err: any) {
     // If the index doesn't exist, that's fine
@@ -242,6 +375,10 @@ async function createIndexDirectly(
   schemaName: string,
   schemaDefinition: Record<string, any>
 ): Promise<void> {
+  if (!redisClient) {
+    throw new Error('Redis client is not initialized');
+  }
+
   const indexName = `${schemaName}Idx`;
   const prefix = `${schemaName}:`;
 
@@ -279,7 +416,7 @@ async function createIndexDirectly(
       ...fieldSpecs.flatMap((spec) => spec.split(' ')),
     ];
 
-    await redisClient?.call(args[0], ...args.slice(1));
+    await redisClient.call(args[0], ...args.slice(1));
     logger.info(`Created index using direct command: ${indexName}`);
   } catch (err: any) {
     // If index already exists, that's okay
@@ -292,27 +429,115 @@ async function createIndexDirectly(
 }
 
 /**
- * Clear the repository cache (useful for testing or after major schema changes)
+ * Clean up old or infrequently used repositories from the cache
  */
-export function clearRepositoryCache(): void {
-  repositoryCache.clear();
-  logger.info('Repository cache cleared');
+function cleanupRepositoryCache(): void {
+  const now = Date.now();
+
+  // Sort repositories by last used time
+  const entries = Array.from(repositoryCache.entries()).sort(
+    (a, b) => a[1].lastUsed - b[1].lastUsed
+  );
+
+  // Remove the oldest 1/3 of cached repositories
+  const removeCount = Math.floor(entries.length / 3);
+
+  if (removeCount > 0) {
+    let removed = 0;
+
+    for (const [key, value] of entries) {
+      if (removed >= removeCount) break;
+
+      // Only remove if not used in the last 10 minutes
+      if (now - value.lastUsed > 600000) {
+        repositoryCache.delete(key);
+        removed++;
+        logger.debug(
+          `Cleaned up unused repository from cache: ${key} (last used ${
+            (now - value.lastUsed) / 1000
+          }s ago)`
+        );
+      }
+    }
+
+    logger.info(
+      `Repository cache cleanup: removed ${removed} of ${entries.length} cached repositories`
+    );
+  }
 }
 
 /**
- * Check repository health by verifying connection to Redis
+ * Clear the repository cache (useful for testing or after major schema changes)
+ */
+export function clearRepositoryCache(): void {
+  const count = repositoryCache.size;
+  repositoryCache.clear();
+  logger.info(`Repository cache cleared (${count} repositories removed)`);
+}
+
+/**
+ * Get a repository with specified options or defaults
+ *
+ * @param schemaName - The schema name to get a repository for
+ * @param schemaDefinition - The schema definition
+ * @param forceRefresh - Whether to force a refresh of the repository
+ * @returns The repository instance
+ */
+export async function getRepository<T extends Entity>(
+  schemaName: string,
+  schemaDefinition: Record<string, any>,
+  forceRefresh = false
+): Promise<Repository<T>> {
+  return initializeRepository<T>(schemaName, schemaDefinition, {
+    forceRefresh,
+  });
+}
+
+/**
+ * Invalidate a specific repository in the cache
+ *
+ * @param schemaName - The schema name to invalidate
+ */
+export function invalidateRepository(schemaName: string): void {
+  if (repositoryCache.has(schemaName)) {
+    repositoryCache.delete(schemaName);
+    logger.info(`Repository cache invalidated for: ${schemaName}`);
+  }
+}
+
+/**
+ * Check repository health by verifying connection to Redis and repository validity
  */
 export async function checkRepositoryHealth(): Promise<{
   healthy: boolean;
-  repositories: string[];
+  repositories: Array<{
+    name: string;
+    age: number;
+    usageCount: number;
+  }>;
   error?: string;
 }> {
   try {
     // Verify Redis connection
-    await redisClient?.ping();
+    if (!redisClient) {
+      return {
+        healthy: false,
+        repositories: [],
+        error: 'Redis client is not initialized',
+      };
+    }
+
+    await redisClient.ping();
 
     // Check repositories
-    const repositories = Array.from(repositoryCache.keys());
+    const now = Date.now();
+    const repositories = Array.from(repositoryCache.entries()).map(
+      ([name, data]) => ({
+        name,
+        age: now - data.timestamp,
+        usageCount: data.validationCount,
+      })
+    );
 
     return {
       healthy: true,
@@ -321,7 +546,13 @@ export async function checkRepositoryHealth(): Promise<{
   } catch (err) {
     return {
       healthy: false,
-      repositories: Array.from(repositoryCache.keys()),
+      repositories: Array.from(repositoryCache.entries()).map(
+        ([name, data]) => ({
+          name,
+          age: Date.now() - data.timestamp,
+          usageCount: data.validationCount,
+        })
+      ),
       error: err instanceof Error ? err.message : String(err),
     };
   }

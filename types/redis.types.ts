@@ -1,4 +1,4 @@
-import Redis from "ioredis";
+import Redis, { SentinelAddress } from "ioredis";
 import { Client } from "redis-om";
 
 export interface RedisManagerEvents {
@@ -36,4 +36,23 @@ export interface RedisConfig {
   sentinels: { development: string; production: string };
   maxRetries: number;
   connectionTimeout: number;
+}
+
+export interface MasterInfo {
+  host: string;
+  port: number;
+  lastChecked: number;
+}
+
+export interface RedisConfiguration {
+  sentinels: SentinelAddress[];
+  directHost: string;
+  directPort: number;
+  masterName: string;
+  password?: string;
+  sentinelPassword?: string;
+  useDirectConnection: boolean;
+  masterCheckIntervalMs: number;
+  connectionTimeoutMs: number;
+  maxRetries: number;
 }

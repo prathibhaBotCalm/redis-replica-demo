@@ -1,12 +1,12 @@
-import winston from 'winston';
 import fs from 'fs';
 import path from 'path';
+import winston, { format } from 'winston';
 
-// Create logs directory if it doesn't exist
-const logsDir = path.join(process.cwd(), 'logs');
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir, { recursive: true });
-}
+// Configuration constants
+const MAX_LOG_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_LOG_FILES = 5; // Keep 5 rotated files per log level
+const LOG_ROTATION_FREQUENCY = '1d'; // Rotate daily
+const LOG_FILE_PERMISSIONS = 0o644; // rw-r--r--
 
 // Define log levels with priorities
 const levels = {
@@ -23,47 +23,113 @@ const level = () => {
   return env === 'development' ? 'debug' : 'info';
 };
 
-// Define custom format for logs
-const logFormat = winston.format.combine(
-  winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss.SSS' }),
-  winston.format.printf(
-    (info) => `${info.timestamp} ${info.level}: ${info.message}`
+/**
+ * Ensure logs directory exists synchronously
+ */
+function ensureLogDirectory(): string {
+  const logsDir = path.join(process.cwd(), 'logs');
+
+  try {
+    // Check if directory exists
+    if (!fs.existsSync(logsDir)) {
+      // Create logs directory with proper permissions
+      fs.mkdirSync(logsDir, { recursive: true, mode: 0o755 }); // rwxr-xr-x
+      console.log(`Created logs directory at ${logsDir}`);
+    }
+
+    // Verify write permissions
+    fs.accessSync(logsDir, fs.constants.W_OK);
+
+    return logsDir;
+  } catch (err) {
+    // Log to console as fallback if we can't access logs directory
+    console.error(
+      `Error setting up logs directory: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+
+    // Try using temp directory as fallback
+    const tempDir = path.join(require('os').tmpdir(), 'app-logs');
+
+    try {
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true, mode: 0o755 });
+      }
+      console.warn(`Using fallback logs directory: ${tempDir}`);
+      return tempDir;
+    } catch (tempErr) {
+      console.error(
+        `Failed to create fallback logs directory: ${
+          tempErr instanceof Error ? tempErr.message : String(tempErr)
+        }`
+      );
+      // Return original logs directory even though it may not work
+      return logsDir;
+    }
+  }
+}
+
+// Create logs directory and get path
+const logsDir = ensureLogDirectory();
+
+// Define formats
+const timestampFormat = format.timestamp({
+  format: 'YYYY-MM-DD HH:mm:ss.SSS',
+});
+
+const logFormat = format.combine(
+  timestampFormat,
+  format.errors({ stack: true }), // Ensures error stacks are logged
+  format.printf(
+    (info) =>
+      `${info.timestamp} ${info.level}: ${info.message}${
+        info.stack ? `\n${info.stack}` : ''
+      }`
   )
 );
 
-// Define colorized format for console
-const consoleFormat = winston.format.combine(
-  winston.format.colorize({ all: true }),
-  winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss.SSS' }),
-  winston.format.printf(
-    (info) => `${info.timestamp} ${info.level}: ${info.message}`
+const consoleFormat = format.combine(
+  format.colorize({ all: true }),
+  timestampFormat,
+  format.errors({ stack: true }),
+  format.printf(
+    (info) =>
+      `${info.timestamp} ${info.level}: ${info.message}${
+        info.stack ? `\n${info.stack}` : ''
+      }`
   )
 );
 
-// Configure file transports (one for each log level)
+/**
+ * Create a transport for a specific log level
+ */
+function createFileTransport(level: string) {
+  return new winston.transports.File({
+    filename: path.join(logsDir, `${level}.log`),
+    level,
+    maxsize: MAX_LOG_SIZE,
+    maxFiles: MAX_LOG_FILES,
+    tailable: true,
+    format: logFormat,
+    options: { flags: 'a', mode: LOG_FILE_PERMISSIONS },
+  });
+}
+
+// Create file transports for each log level
 const fileTransports = [
-  new winston.transports.File({
-    filename: path.join(logsDir, 'error.log'),
-    level: 'error',
-  }),
-  new winston.transports.File({
-    filename: path.join(logsDir, 'warn.log'),
-    level: 'warn',
-  }),
-  new winston.transports.File({
-    filename: path.join(logsDir, 'info.log'),
-    level: 'info',
-  }),
-  new winston.transports.File({
-    filename: path.join(logsDir, 'http.log'),
-    level: 'http',
-  }),
-  new winston.transports.File({
-    filename: path.join(logsDir, 'debug.log'),
-    level: 'debug',
-  }),
+  createFileTransport('error'),
+  createFileTransport('warn'),
+  createFileTransport('info'),
+  createFileTransport('http'),
+  createFileTransport('debug'),
   new winston.transports.File({
     filename: path.join(logsDir, 'combined.log'),
+    maxsize: MAX_LOG_SIZE,
+    maxFiles: MAX_LOG_FILES,
+    tailable: true,
+    format: logFormat,
+    options: { flags: 'a', mode: LOG_FILE_PERMISSIONS },
   }),
 ];
 
@@ -81,12 +147,33 @@ const logger = winston.createLogger({
   exceptionHandlers: [
     new winston.transports.File({
       filename: path.join(logsDir, 'exceptions.log'),
+      maxsize: MAX_LOG_SIZE,
+      maxFiles: MAX_LOG_FILES,
+      tailable: true,
+      format: logFormat,
+      options: { flags: 'a', mode: LOG_FILE_PERMISSIONS },
     }),
     new winston.transports.Console({
       format: consoleFormat,
     }),
   ],
+  rejectionHandlers: [
+    new winston.transports.File({
+      filename: path.join(logsDir, 'rejections.log'),
+      maxsize: MAX_LOG_SIZE,
+      maxFiles: MAX_LOG_FILES,
+      tailable: true,
+      format: logFormat,
+      options: { flags: 'a', mode: LOG_FILE_PERMISSIONS },
+    }),
+  ],
+  exitOnError: false,
 });
+
+// Log initialization
+logger.info(
+  `Logger initialized in ${process.env.NODE_ENV || 'development'} mode`
+);
 
 /**
  * Format a log message with additional metadata
@@ -98,15 +185,18 @@ function formatMessage(message: string, meta: any[]): string {
 
   // Handle special case where there's just one error object
   if (meta.length === 1 && meta[0] instanceof Error) {
-    return `${message} ${meta[0].stack || meta[0].message}`;
+    const error = meta[0];
+    return `${message} ${error.message}`;
+    // Note: Error stack will be handled by winston format.errors()
   }
 
   // Format additional arguments
   const formattedMeta = meta
     .map((item) => {
       if (item instanceof Error) {
-        return item.stack || item.message;
-      } else if (typeof item === 'object') {
+        return item.message;
+        // Note: Error stack will be handled by winston format.errors()
+      } else if (typeof item === 'object' && item !== null) {
         try {
           return JSON.stringify(item, null, 2);
         } catch (e) {
@@ -195,10 +285,14 @@ export function performance(
   durationMs: number,
   metadata: Record<string, any> = {}
 ): void {
-  info(`PERFORMANCE: ${operation} completed in ${durationMs.toFixed(2)}ms`, {
+  const durationFormatted =
+    typeof durationMs === 'number' ? durationMs.toFixed(2) : String(durationMs);
+
+  logger.info(`PERFORMANCE: ${operation} completed in ${durationFormatted}ms`, {
     ...metadata,
     duration: durationMs,
     operation,
+    _type: 'performance',
   });
 }
 
@@ -217,7 +311,7 @@ export function audit(
   result: 'success' | 'failure',
   metadata: Record<string, any> = {}
 ): void {
-  info(`AUDIT: ${action} by ${actor} on ${target} - ${result}`, {
+  logger.info(`AUDIT: ${action} by ${actor} on ${target} - ${result}`, {
     ...metadata,
     audit: true,
     action,
@@ -225,61 +319,53 @@ export function audit(
     target,
     result,
     timestamp: new Date().toISOString(),
+    _type: 'audit',
   });
 }
 
-// Implement a very basic log rotation mechanism
-function setupLogRotation() {
-  // Run once per day at midnight
-  const now = new Date();
-  const night = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate() + 1,
-    0,
-    0,
-    0
-  );
-  const timeToMidnight = night.getTime() - now.getTime();
+/**
+ * Check if the logger is working properly
+ */
+export function testLogger(): Record<string, boolean> {
+  const results: Record<string, boolean> = {};
 
-  setTimeout(() => {
-    // Create dated backup of each log file
-    const date = new Date().toISOString().split('T')[0];
-    const logFiles = [
-      'error.log',
-      'warn.log',
-      'info.log',
-      'http.log',
-      'debug.log',
-      'combined.log',
-      'exceptions.log',
-    ];
+  try {
+    // Test writing to each log file
+    logger.error('Test error message');
+    results.error = true;
 
-    logFiles.forEach((file) => {
-      const filePath = path.join(logsDir, file);
-      const backupPath = path.join(logsDir, `${file}.${date}`);
+    logger.warn('Test warning message');
+    results.warn = true;
 
-      if (fs.existsSync(filePath)) {
-        // Check if file has content before rotating
-        const stats = fs.statSync(filePath);
-        if (stats.size > 0) {
-          try {
-            fs.copyFileSync(filePath, backupPath);
-            fs.truncateSync(filePath);
-          } catch (err) {
-            console.error(`Failed to rotate log file ${file}:`, err);
-          }
-        }
-      }
-    });
+    logger.info('Test info message');
+    results.info = true;
 
-    // Setup next rotation
-    setupLogRotation();
-  }, timeToMidnight);
+    logger.http('Test HTTP message');
+    results.http = true;
+
+    logger.debug('Test debug message');
+    results.debug = true;
+
+    results.overall = true;
+  } catch (err) {
+    console.error('Logger test failed:', err);
+    results.overall = false;
+  }
+
+  return results;
 }
 
-// Start log rotation
-setupLogRotation();
+// Test the logger on initialization
+try {
+  const testResults = testLogger();
+  if (testResults.overall) {
+    console.log('Logger initialized and tested successfully');
+  } else {
+    console.warn('Logger test failed');
+  }
+} catch (err) {
+  console.error('Error testing logger:', err);
+}
 
 // Export a default logger instance
 export default logger;
