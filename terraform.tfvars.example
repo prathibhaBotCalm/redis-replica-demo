@@ -1,0 +1,13 @@
+do_token             = "your_digital_ocean_api_token"
+project_name         = "my-application"
+ssh_key_name         = "my-ssh-key"
+ssh_public_key_path  = "~/.ssh/id_rsa.pub"
+ssh_private_key_path = "~/.ssh/id_rsa"
+droplet_count        = 2
+droplet_image        = "ubuntu-22-04-x64"
+droplet_size         = "s-2vcpu-2gb"
+region               = "nyc1"
+vpc_cidr             = "10.10.10.0/24"
+environment          = "development"
+create_loadbalancer  = true
+allowed_ssh_ips      = ["your_ip_address/32"]  # Restrict to your IP for better security

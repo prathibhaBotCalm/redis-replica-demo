@@ -39,3 +39,4 @@ backup/*
 
 
 terraform.tfvars
+.qodo
