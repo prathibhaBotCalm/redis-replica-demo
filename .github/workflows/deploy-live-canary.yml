@@ -82,6 +82,7 @@ jobs:
           envs: |
             GITHUB_TOKEN,${{ secrets.GITHUB_TOKEN }}
             GITHUB_ACTOR,${{ github.actor }}
+            LIVE_USER,${{ secrets.LIVE_USER }}
             APP_PORT,${{ secrets.APP_PORT }}
             REDIS_MASTER_PORT,${{ secrets.REDIS_MASTER_PORT }}
             REDIS_SLAVE_1_PORT,${{ secrets.REDIS_SLAVE_1_PORT }}
