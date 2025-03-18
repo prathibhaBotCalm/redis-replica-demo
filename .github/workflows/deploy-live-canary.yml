@@ -60,6 +60,13 @@ jobs:
           REDIS_PORT: ${{ secrets.REDIS_PORT }}
           CANARY_WEIGHT: ${{ secrets.CANARY_WEIGHT }}
           IS_DEV: ${{ secrets.IS_DEV }}
+          BACKUP_INTERVAL: ${{ secrets.BACKUP_INTERVAL }}
+          MAX_BACKUPS: ${{ secrets.MAX_BACKUPS }}
+          RETENTION_DAYS: ${{ secrets.RETENTION_DAYS }}
+          GDRIVE_ENABLED: ${{ secrets.GDRIVE_ENABLED }}
+          GDRIVE_DIR: ${{ secrets.GDRIVE_DIR }}
+          GDRIVE_MAX_BACKUPS: ${{ secrets.GDRIVE_MAX_BACKUPS }}
+          GDRIVE_RETENTION_DAYS: ${{ secrets.GDRIVE_RETENTION_DAYS }}
 
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -147,6 +154,7 @@ jobs:
             # Create environment variables file
             cat > .env.production << EOF
             NODE_ENV=production
+            LIVE_USER=${LIVE_USER}
             APP_PORT=${APP_PORT}
             REDIS_MASTER_PORT=${REDIS_MASTER_PORT}
             REDIS_SLAVE_1_PORT=${REDIS_SLAVE_1_PORT}
