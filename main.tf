@@ -12,11 +12,8 @@ provider "digitalocean" {
   token = var.do_token
 }
 
-# Create a new SSH key
-resource "digitalocean_ssh_key" "default" {
-  name       = var.ssh_key_name
-  public_key = file(var.ssh_public_key_path)
-}
+# Import all existing SSH keys from Digital Ocean
+data "digitalocean_ssh_keys" "all" {}
 
 # Create a new Droplet
 resource "digitalocean_droplet" "web" {
@@ -25,7 +22,7 @@ resource "digitalocean_droplet" "web" {
   name     = "${var.project_name}-droplet-${count.index + 1}"
   region   = var.region
   size     = var.droplet_size
-  ssh_keys = [digitalocean_ssh_key.default.fingerprint]
+  # This is updated in the resource block below with the conditional logic
   tags     = ["web", var.project_name]
 
   # VPC configuration
@@ -33,6 +30,9 @@ resource "digitalocean_droplet" "web" {
 
   # User data can be used for initial server setup
   user_data = file("${path.module}/scripts/setup.sh")
+
+  # Use all available SSH keys in the account
+  ssh_keys = data.digitalocean_ssh_keys.all.ssh_keys[*].fingerprint
 
   # Wait for droplet to be active before considering the creation complete
   provisioner "remote-exec" {

@@ -38,6 +38,53 @@ if [ -z "$DO_TOKEN" ] || [ "$DO_TOKEN" == "your_digital_ocean_api_token" ]; then
     exit 1
 fi
 
+# Verify SSH key exists - improved path detection
+SSH_KEY_PATH=$(grep ssh_public_key_path terraform.tfvars | sed 's/.*=\s*"\(.*\)".*/\1/' | sed "s|~|$HOME|g")
+echo -e "${GREEN}Looking for SSH key at: $SSH_KEY_PATH${NC}"
+
+if [ ! -f "$SSH_KEY_PATH" ]; then
+    echo -e "${YELLOW}SSH public key not found at the specified path.${NC}"
+    
+    # Check if the default key exists anyway
+    if [ -f "$HOME/.ssh/id_rsa.pub" ]; then
+        echo -e "${GREEN}Found default SSH key at: $HOME/.ssh/id_rsa.pub${NC}"
+        echo -e "${YELLOW}Would you like to use this key instead? (y/n)${NC}"
+        read -p "" -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            # Update the terraform.tfvars file with the correct path
+            sed -i.bak "s|ssh_public_key_path.*|ssh_public_key_path = \"$HOME/.ssh/id_rsa.pub\"|" terraform.tfvars
+            sed -i.bak "s|ssh_private_key_path.*|ssh_private_key_path = \"$HOME/.ssh/id_rsa\"|" terraform.tfvars
+            rm -f terraform.tfvars.bak
+            echo -e "${GREEN}Updated terraform.tfvars with correct SSH key paths.${NC}"
+            SSH_KEY_PATH="$HOME/.ssh/id_rsa.pub"
+        fi
+    fi
+    
+    # If still not found, offer to create a new key
+    if [ ! -f "$SSH_KEY_PATH" ]; then
+        echo -e "${YELLOW}Would you like to generate a new SSH key pair? (y/n)${NC}"
+        read -p "" -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            KEY_PATH="${HOME}/.ssh/do_terraform_key"
+            ssh-keygen -t rsa -b 4096 -f "$KEY_PATH" -N ""
+            echo -e "${GREEN}SSH key pair generated at: ${KEY_PATH}${NC}"
+            
+            # Update the terraform.tfvars file with the new key path
+            sed -i.bak "s|ssh_public_key_path.*|ssh_public_key_path = \"${KEY_PATH}.pub\"|" terraform.tfvars
+            sed -i.bak "s|ssh_private_key_path.*|ssh_private_key_path = \"${KEY_PATH}\"|" terraform.tfvars
+            rm -f terraform.tfvars.bak
+            echo -e "${GREEN}Updated terraform.tfvars with new SSH key paths.${NC}"
+        else
+            echo -e "${RED}SSH key is required to proceed. Please create one and update terraform.tfvars.${NC}"
+            exit 1
+        fi
+    fi
+else
+    echo -e "${GREEN}SSH key found successfully!${NC}"
+fi
+
 # Check if setup.sh exists
 if [ ! -f "scripts/setup.sh" ]; then
     echo -e "${RED}scripts/setup.sh not found. Cannot continue.${NC}"
@@ -54,6 +101,21 @@ run_terraform() {
     
     if ! terraform $command; then
         echo -e "${RED}Terraform $command failed.${NC}"
+        
+        # Check if it's an apply failure and probably due to stale plan
+        if [[ "$command" == "apply tfplan" && -f "tfplan" ]]; then
+            echo -e "${YELLOW}This might be due to a stale plan. Would you like to generate a new plan and apply it? (y/n)${NC}"
+            read -p "" -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                echo -e "${GREEN}Generating new plan...${NC}"
+                terraform plan -out=tfplan
+                echo -e "${GREEN}Applying new plan...${NC}"
+                terraform apply tfplan
+                return $?
+            fi
+        fi
+        
         exit 1
     fi
 }

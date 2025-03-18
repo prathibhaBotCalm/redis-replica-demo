@@ -55,7 +55,7 @@ variable "region" {
 variable "vpc_cidr" {
   description = "CIDR block for the VPC"
   type        = string
-  default     = "10.10.10.0/24"
+  default     = "10.118.0.0/20"  # Using a CIDR range that doesn't conflict with DO internal networks
 }
 
 variable "environment" {
@@ -78,4 +78,10 @@ variable "allowed_ssh_ips" {
   description = "List of IP addresses allowed to connect via SSH"
   type        = list(string)
   default     = ["0.0.0.0/0"] # Open to all by default, consider restricting in production
+}
+
+variable "use_existing_ssh_key" {
+  description = "Whether to use an existing SSH key instead of creating a new one"
+  type        = bool
+  default     = true
 }
