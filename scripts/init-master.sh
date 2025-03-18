@@ -1,10 +1,11 @@
 #!/bin/bash
 set -e
 
-REDIS_PASSWORD="your_redis_password"
+REDIS_PASSWORD="${REDIS_PASSWORD:-your_redis_password}"
 BACKUP_DIR="/backup"
 DATA_DIR="/data"
 DUMP_FILE="$DATA_DIR/dump.rdb"
+LATEST_SYMLINK="$BACKUP_DIR/dump-latest.rdb"
 
 # Function to check if Redis is already running
 check_redis_running() {
@@ -16,23 +17,30 @@ check_redis_running() {
     fi
 }
 
-# Function to find a valid dump.rdb file in multiple locations
-find_dump_file() {
-    # Check multiple locations in order of preference
+# Find the most recent backup by timestamp
+find_latest_backup() {
+    # Check if the latest symlink exists and is valid
+    if [ -L "$LATEST_SYMLINK" ] && [ -f "$(readlink -f "$LATEST_SYMLINK")" ]; then
+        echo "$(readlink -f "$LATEST_SYMLINK")"
+        return
+    fi
+    
+    # Look for the most recent timestamp-based backup
+    LATEST_BY_TIME=$(find "$BACKUP_DIR" -name "dump-*.rdb" -type f -printf "%T@ %p\n" 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2)
+    if [ -n "$LATEST_BY_TIME" ]; then
+        echo "$LATEST_BY_TIME"
+        return
+    fi
+    
+    # Check for a standard dump.rdb in backup directory
     if [ -f "$BACKUP_DIR/dump.rdb" ]; then
         echo "$BACKUP_DIR/dump.rdb"
         return
     fi
 
+    # Check for existing dump.rdb in data directory
     if [ -f "$DATA_DIR/dump.rdb" ]; then
         echo "$DATA_DIR/dump.rdb"
-        return
-    fi
-    
-    # Look for timestamp-based dumps
-    LATEST_BACKUP=$(ls -t $BACKUP_DIR/dump-*.rdb 2>/dev/null | head -n 1)
-    if [ -n "$LATEST_BACKUP" ]; then
-        echo "$LATEST_BACKUP"
         return
     fi
     
@@ -46,35 +54,54 @@ find_dump_file() {
     echo ""
 }
 
+# Log function with timestamp
+log() {
+    echo "$(date +'%Y-%m-%d %H:%M:%S') - $1"
+}
+
 # Check for existing Redis processes before starting
 check_redis_running
 
-# Find any existing dump.rdb file
-DUMP_SOURCE=$(find_dump_file)
+# Find the most recent backup
+LATEST_BACKUP=$(find_latest_backup)
 
-if [ -n "$DUMP_SOURCE" ]; then
-    echo "Found RDB file: $DUMP_SOURCE"
+if [ -n "$LATEST_BACKUP" ]; then
+    log "Found latest RDB backup: $LATEST_BACKUP"
+    
+    # Calculate backup age in seconds
+    if [ -f "$LATEST_BACKUP" ]; then
+        BACKUP_TIME=$(stat -c %Y "$LATEST_BACKUP")
+        CURRENT_TIME=$(date +%s)
+        BACKUP_AGE=$((CURRENT_TIME - BACKUP_TIME))
+        
+        log "Backup is ${BACKUP_AGE} seconds old ($(echo "scale=2; ${BACKUP_AGE}/3600" | bc) hours)"
+    fi
     
     # Ensure data directory exists
-    mkdir -p $DATA_DIR
+    mkdir -p "$DATA_DIR"
     
-    echo "Copying RDB file to $DUMP_FILE..."
-    cp -f "$DUMP_SOURCE" "$DUMP_FILE"
+    log "Copying latest backup to $DUMP_FILE..."
+    cp -f "$LATEST_BACKUP" "$DUMP_FILE"
     
     # Set proper permissions
     chmod 644 "$DUMP_FILE"
     
-    echo "Verifying RDB file was copied successfully..."
-    ls -la "$DUMP_FILE"
+    # Verify file size to ensure it's a valid backup
+    BACKUP_SIZE=$(stat -c %s "$DUMP_FILE" 2>/dev/null || stat -f %z "$DUMP_FILE")
+    log "Backup file size: ${BACKUP_SIZE} bytes"
     
-    echo "Starting Redis with data from $DUMP_SOURCE..."
+    if [ "$BACKUP_SIZE" -eq 0 ]; then
+        log "WARNING: Backup file has zero size, may be corrupted!"
+    fi
+    
+    log "Starting Redis with data from latest backup..."
     # Disable AOF initially to ensure RDB is loaded
     exec redis-server \
         --bind 0.0.0.0 \
         --port 6379 \
-        --requirepass $REDIS_PASSWORD \
-        --masterauth $REDIS_PASSWORD \
-        --dir $DATA_DIR \
+        --requirepass "$REDIS_PASSWORD" \
+        --masterauth "$REDIS_PASSWORD" \
+        --dir "$DATA_DIR" \
         --dbfilename dump.rdb \
         --appendonly no \
         --save 60 1 \
@@ -82,14 +109,14 @@ if [ -n "$DUMP_SOURCE" ]; then
         --loadmodule /opt/redis-stack/lib/redisbloom.so \
         --loadmodule /opt/redis-stack/lib/rejson.so
 else
-    echo "No backup found. Starting Redis with a new instance."
+    log "No backup found. Starting Redis with a new instance."
     # Start Redis in foreground
     exec redis-server \
         --bind 0.0.0.0 \
         --port 6379 \
-        --requirepass $REDIS_PASSWORD \
-        --masterauth $REDIS_PASSWORD \
-        --dir $DATA_DIR \
+        --requirepass "$REDIS_PASSWORD" \
+        --masterauth "$REDIS_PASSWORD" \
+        --dir "$DATA_DIR" \
         --dbfilename dump.rdb \
         --appendonly yes \
         --save 60 1 \

@@ -153,7 +153,7 @@ services:
         reservations:
           memory: 128M
 
-      # Add Redis exporters
+  # Redis exporters section
   redis-exporter-master:
     image: oliver006/redis_exporter
     container_name: redis-exporter-master
@@ -179,7 +179,7 @@ services:
       - redis-network
       - monitoring-network
     ports:
-      - "9122:9121"  # Expose internal port 9121 on host port 9122
+      - "9122:9121"
     restart: unless-stopped
     profiles:
       - production
@@ -196,7 +196,7 @@ services:
       - redis-network
       - monitoring-network
     ports:
-      - "9123:9121"  # Expose internal port 9121 on host port 9123
+      - "9123:9121"
     restart: unless-stopped
     profiles:
       - production
@@ -213,7 +213,7 @@ services:
       - redis-network
       - monitoring-network
     ports:
-      - "9124:9121"  # Expose internal port 9121 on host port 9123
+      - "9124:9121"
     restart: unless-stopped
     profiles:
       - production
@@ -230,14 +230,14 @@ services:
       - redis-network
       - monitoring-network
     ports:
-      - "9125:9121"  # Expose internal port 9121 on host port 9123
+      - "9125:9121"
     restart: unless-stopped
     profiles:
       - production
     depends_on:
       - redis-slave-4
-        
 
+  # Sentinel configuration
   sentinel-1:
     image: bitnami/redis-sentinel:latest
     environment:
@@ -298,19 +298,24 @@ services:
       - production
       - development
 
-  # Backup service for Redis data
   redis-backup:
-    image: alpine:latest
+    build:
+      context: .
+      dockerfile: ./scripts/Dockerfile.redis-backup
     volumes:
       - redis-data:/data:ro
       - ./backup:/backup
-      - ./scripts/backup.sh:/scripts/backup.sh:ro
+      - ./config/rclone:/config/rclone:ro
     environment:
-      - BACKUP_INTERVAL=600  # 10 minutes
-      - MAX_BACKUPS=7        # Keep 7 days of backups
+      - BACKUP_INTERVAL=${BACKUP_INTERVAL:-600}  # 10 minutes
+      - MAX_BACKUPS=${MAX_BACKUPS:-24}           # Keep 24 backups by default
+      - RETENTION_DAYS=${RETENTION_DAYS:-7}      # Keep 7 days of backups
+      - GDRIVE_ENABLED=${GDRIVE_ENABLED:-true}   # Enable Google Drive backup
+      - GDRIVE_DIR=${GDRIVE_DIR:-"redis-backups"}
+      - GDRIVE_MAX_BACKUPS=${GDRIVE_MAX_BACKUPS:-48}
+      - GDRIVE_RETENTION_DAYS=${GDRIVE_RETENTION_DAYS:-14}
     networks:
       - redis-network
-    entrypoint: ['/bin/sh', '/scripts/backup.sh']
     depends_on:
       redis-master:
         condition: service_healthy
@@ -362,7 +367,7 @@ services:
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
       - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
     ports:
-      - "3005:3000"  # Map Grafana container port 3000 to host port 3005
+      - "3005:3000"
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
