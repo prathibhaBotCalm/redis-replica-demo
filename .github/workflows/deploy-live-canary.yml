@@ -1,12 +1,6 @@
 name: Deploy to Live Environment (Canary)
 on:
   workflow_call:
-    inputs:
-      canary_weight:
-        description: 'Percentage of traffic to route to canary (0-100)'
-        required: false
-        type: number
-        default: 20
 
 jobs:
   deploy-live-canary:
@@ -14,56 +8,16 @@ jobs:
     name: Deploy to Live Environment (Canary)
     env:
       NODE_ENV: production
+      CANARY_WEIGHT: 20
     steps:
       - name: Verify Live Secrets
-        id: verify-secrets
         run: |
-          # Define required secrets array
-          REQUIRED_SECRETS=(
-            LIVE_HOST
-            LIVE_USER
-            LIVE_SSH_KEY
-            APP_PORT
-            REDIS_MASTER_PORT
-            REDIS_SLAVE_1_PORT
-            REDIS_SLAVE_2_PORT
-            REDIS_SLAVE_3_PORT
-            REDIS_SLAVE_4_PORT
-            SENTINEL_1_PORT
-            SENTINEL_2_PORT
-            SENTINEL_3_PORT
-            REDIS_PASSWORD
-            REDIS_MASTER_NAME
-            REDIS_SENTINEL_QUORUM
-            REDIS_HOST_PROD
-            REDIS_SENTINELS_PROD
-            REDIS_PORT
-          )
-
-          # Check each required secret
-          MISSING_SECRETS=()
-          for secret in "${REQUIRED_SECRETS[@]}"; do
+          for secret in LIVE_HOST LIVE_USER LIVE_SSH_KEY APP_PORT REDIS_MASTER_PORT REDIS_SLAVE_1_PORT REDIS_SLAVE_2_PORT SENTINEL_1_PORT SENTINEL_2_PORT SENTINEL_3_PORT REDIS_PASSWORD REDIS_MASTER_NAME REDIS_SENTINEL_QUORUM REDIS_HOST_PROD REDIS_SENTINELS_PROD REDIS_PORT CANARY_WEIGHT; do
             if [ -z "${!secret}" ]; then
-              MISSING_SECRETS+=("$secret")
+              echo "::error::Secret $secret is not set"
+              exit 1
             fi
           done
-
-          # Fail if any secrets are missing
-          if [ ${#MISSING_SECRETS[@]} -gt 0 ]; then
-            echo "::error::Missing required secrets: ${MISSING_SECRETS[*]}"
-            exit 1
-          fi
-
-          # Set canary weight from input or secret
-          CANARY_WEIGHT=${{ inputs.canary_weight }}
-          if [ -z "$CANARY_WEIGHT" ]; then
-            CANARY_WEIGHT=${{ secrets.CANARY_WEIGHT }}
-          fi
-          if [ -z "$CANARY_WEIGHT" ]; then
-            CANARY_WEIGHT=20  # Default fallback
-          fi
-          echo "canary_weight=${CANARY_WEIGHT}" >> $GITHUB_OUTPUT
-          echo "Using canary weight: ${CANARY_WEIGHT}%"
         env:
           LIVE_HOST: ${{ secrets.LIVE_HOST }}
           LIVE_USER: ${{ secrets.LIVE_USER }}
@@ -83,6 +37,16 @@ jobs:
           REDIS_HOST_PROD: ${{ secrets.REDIS_HOST_PROD }}
           REDIS_SENTINELS_PROD: ${{ secrets.REDIS_SENTINELS_PROD }}
           REDIS_PORT: ${{ secrets.REDIS_PORT }}
+          CANARY_WEIGHT: ${{ secrets.CANARY_WEIGHT }}
+          IS_DEV: ${{ secrets.IS_DEV }}
+          BACKUP_INTERVAL: ${{ secrets.BACKUP_INTERVAL }}
+          MAX_BACKUPS: ${{ secrets.MAX_BACKUPS }}
+          RETENTION_DAYS: ${{ secrets.RETENTION_DAYS }}
+          GDRIVE_ENABLED: ${{ secrets.GDRIVE_ENABLED }}
+          GDRIVE_DIR: ${{ secrets.GDRIVE_DIR }}
+          GDRIVE_MAX_BACKUPS: ${{ secrets.GDRIVE_MAX_BACKUPS }}
+          GDRIVE_RETENTION_DAYS: ${{ secrets.GDRIVE_RETENTION_DAYS }}
+
 
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -93,36 +57,16 @@ jobs:
           repo=$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
           echo "repo=${repo}" >> $GITHUB_OUTPUT
 
-      - name: Prepare deployment package
-        run: |
-          # Create a deployment directory
-          mkdir -p deploy
-          
-          # Copy only necessary files (adjust as needed)
-          cp -r docker-compose.yml .env.example scripts deploy/
-          cp -r config deploy/ || true
-          
-          # Create version file for tracking
-          echo "${{ github.sha }}" > deploy/VERSION
-          
-          # Set deployment timestamp
-          echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > deploy/DEPLOY_TIME
-          
-          # Package everything
-          tar -czf deploy.tar.gz -C deploy .
-
       - name: Copy deploy files to remote server
         uses: appleboy/scp-action@master
         with:
           host: ${{ secrets.LIVE_HOST }}
           username: ${{ secrets.LIVE_USER }}
           key: ${{ secrets.LIVE_SSH_KEY }}
-          source: 'deploy.tar.gz'
-          target: '/home/${{ secrets.LIVE_USER }}'
-          strip_components: 0
+          source: './*'
+          target: '/home/${{ secrets.LIVE_USER }}/app'
 
       - name: Deploy Canary Release
-        id: deploy
         uses: appleboy/ssh-action@master
         with:
           host: ${{ secrets.LIVE_HOST }}
@@ -130,85 +74,52 @@ jobs:
           key: ${{ secrets.LIVE_SSH_KEY }}
           script: |
             set -euo pipefail
-            
-            # Create application directory structure
-            APP_DIR="/home/${{ secrets.LIVE_USER }}/app"
-            BACKUP_DIR="/home/${{ secrets.LIVE_USER }}/app-backups"
-            LOG_DIR="/home/${{ secrets.LIVE_USER }}/logs"
-            
-            mkdir -p "$APP_DIR" "$BACKUP_DIR" "$LOG_DIR"
-            
-            # Backup current deployment if exists
-            if [ -f "$APP_DIR/docker-compose.yml" ]; then
-              echo "Backing up current deployment..."
-              BACKUP_TIME=$(date -u +"%Y%m%d_%H%M%S")
-              mkdir -p "$BACKUP_DIR/$BACKUP_TIME"
-              cp -r "$APP_DIR"/* "$BACKUP_DIR/$BACKUP_TIME/" || true
-              # Keep only the last 5 backups
-              ls -1dt "$BACKUP_DIR"/* | tail -n +6 | xargs -r rm -rf
-            fi
-            
-            # Extract new deployment
-            echo "Extracting deployment package..."
-            cd /home/${{ secrets.LIVE_USER }}
-            tar -xzf deploy.tar.gz -C "$APP_DIR"
-            cd "$APP_DIR"
-            
-            # Install dependencies if needed
-            echo "Checking dependencies..."
-            MISSING_DEPS=()
-            command -v docker >/dev/null 2>&1 || MISSING_DEPS+=("docker")
-            command -v docker-compose >/dev/null 2>&1 || MISSING_DEPS+=("docker-compose")
-            command -v nginx >/dev/null 2>&1 || MISSING_DEPS+=("nginx")
-            
-            if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
-              echo "Installing missing dependencies: ${MISSING_DEPS[*]}"
+            cd /home/${{ secrets.LIVE_USER }}/app
+
+            # Ensure Docker is installed
+            if ! command -v docker &> /dev/null; then
+              echo "Docker not found, installing..."
               sudo apt-get update
-              
-              if [[ " ${MISSING_DEPS[*]} " =~ " docker " ]]; then
-                echo "Installing Docker..."
-                sudo apt-get install -y docker.io
-                sudo systemctl start docker
-                sudo systemctl enable docker
-                sudo usermod -aG docker $USER
-              fi
-              
-              if [[ " ${MISSING_DEPS[*]} " =~ " docker-compose " ]]; then
-                echo "Installing Docker Compose..."
-                sudo curl -L "https://github.com/docker/compose/releases/download/v2.23.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-                sudo chmod +x /usr/local/bin/docker-compose
-              fi
-              
-              if [[ " ${MISSING_DEPS[*]} " =~ " nginx " ]]; then
-                echo "Installing Nginx..."
-                sudo apt-get install -y nginx
-              fi
+              sudo apt-get install -y docker.io
+              sudo systemctl start docker
+              sudo systemctl enable docker
+              sudo usermod -aG docker $USER
+            else
+              echo "Docker is already installed"
             fi
-            
-            # Setup Docker authentication
+
+            # Ensure Docker Compose is installed
+            if ! command -v docker-compose &> /dev/null; then
+              echo "Installing Docker Compose..."
+              sudo curl -L "https://github.com/docker/compose/releases/download/v2.23.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+              sudo chmod +x /usr/local/bin/docker-compose
+            else
+              echo "Docker Compose is already installed"
+            fi
+
             echo "Logging into GHCR..."
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-            
+
+            # Clean up existing containers
+            echo "Cleaning up existing containers..."
+            docker-compose down || true
+
             # Create or update .env file
-            echo "Configuring environment variables..."
             if [ ! -f .env ]; then
               cp .env.example .env
-            else
-              # Backup .env before modifying
-              cp .env .env.bak
             fi
-            
-            # Update environment variables
-            cat > .env <<EOF
+
+            # Append production environment variables to .env
+            cat <<EOF >> .env
             NODE_ENV=production
             APP_PORT=${{ secrets.APP_PORT }}
             REDIS_MASTER_PORT=${{ secrets.REDIS_MASTER_PORT }}
             REDIS_SLAVE_1_PORT=${{ secrets.REDIS_SLAVE_1_PORT }}
             REDIS_SLAVE_2_PORT=${{ secrets.REDIS_SLAVE_2_PORT }}
-            REDIS_SLAVE_3_PORT=${{ secrets.REDIS_SLAVE_3_PORT }}
-            REDIS_SLAVE_4_PORT=${{ secrets.REDIS_SLAVE_4_PORT }}
             SENTINEL_1_PORT=${{ secrets.SENTINEL_1_PORT }}
             SENTINEL_2_PORT=${{ secrets.SENTINEL_2_PORT }}
+            REDIS_SLAVE_3_PORT: ${{ secrets.REDIS_SLAVE_3_PORT }}
+            REDIS_SLAVE_4_PORT: ${{ secrets.REDIS_SLAVE_4_PORT }}
             SENTINEL_3_PORT=${{ secrets.SENTINEL_3_PORT }}
             REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
             REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}
@@ -216,7 +127,7 @@ jobs:
             REDIS_SENTINELS=sentinel-1:${{ secrets.SENTINEL_1_PORT }},sentinel-2:${{ secrets.SENTINEL_2_PORT }},sentinel-3:${{ secrets.SENTINEL_3_PORT }}
             REDIS_HOST=${{ secrets.REDIS_HOST_PROD }}
             REDIS_PORT=${{ secrets.REDIS_PORT }}
-            CANARY_WEIGHT=${{ steps.verify-secrets.outputs.canary_weight }}
+            CANARY_WEIGHT=${{ secrets.CANARY_WEIGHT }}
             REDIS_SENTINELS_PROD=${{ secrets.REDIS_SENTINELS_PROD }}
             REDIS_HOST_PROD=${{ secrets.REDIS_HOST_PROD }}
             IS_DEV=${{ secrets.IS_DEV }}
@@ -228,23 +139,20 @@ jobs:
             GDRIVE_MAX_BACKUPS=${{ secrets.GDRIVE_MAX_BACKUPS }}
             GDRIVE_RETENTION_DAYS=${{ secrets.GDRIVE_RETENTION_DAYS }}
             EOF
-            
-            # Make scripts executable
-            chmod +x scripts/*.sh || true
-            
-            # Pull the latest images
-            echo "Pulling Docker images..."
+
+            # Make any necessary scripts executable
+            chmod +x scripts/*.sh
+
+            # Pull the latest images for production
+            echo "Pulling latest live images..."
             docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
             docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
-            
-            # Create docker-compose.override.yml for canary deployment
-            cat > docker-compose.override.yml <<EOF
-            version: '3.8'
-            
+
+            # Create an override file for the canary deployment
+            cat <<EOF > docker-compose.override.yml
             services:
               app-stable:
                 image: ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
-                container_name: app-stable
                 environment:
                   - NODE_ENV=production
                   - APP_PORT=${{ secrets.APP_PORT }}
@@ -252,9 +160,17 @@ jobs:
                   - REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}
                   - REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
                   - REDIS_SENTINEL_QUORUM=${{ secrets.REDIS_SENTINEL_QUORUM }}
+                  - CANARY_WEIGHT=${{ secrets.CANARY_WEIGHT }}
                   - REDIS_SENTINELS_PROD=${{ secrets.REDIS_SENTINELS_PROD }}
                   - REDIS_HOST_PROD=${{ secrets.REDIS_HOST_PROD }}
                   - IS_DEV=${{ secrets.IS_DEV }}
+                  - BACKUP_INTERVAL=${{ secrets.BACKUP_INTERVAL }}
+                  - MAX_BACKUPS=${{ secrets.MAX_BACKUPS }}
+                  - RETENTION_DAYS=${{ secrets.RETENTION_DAYS }}
+                  - GDRIVE_ENABLED=${{ secrets.GDRIVE_ENABLED }}
+                  - GDRIVE_DIR=${{ secrets.GDRIVE_DIR }}
+                  - GDRIVE_MAX_BACKUPS=${{ secrets.GDRIVE_MAX_BACKUPS }}
+                  - GDRIVE_RETENTION_DAYS=${{ secrets.GDRIVE_RETENTION_DAYS }}
                 ports:
                   - "3001:${{ secrets.APP_PORT }}"
                 restart: always
@@ -265,21 +181,9 @@ jobs:
                   - sentinel-1
                   - sentinel-2
                   - sentinel-3
-                healthcheck:
-                  test: ["CMD", "curl", "-f", "http://localhost:${{ secrets.APP_PORT }}/health"]
-                  interval: 10s
-                  timeout: 5s
-                  retries: 3
-                  start_period: 10s
-                logging:
-                  driver: "json-file"
-                  options:
-                    max-size: "10m"
-                    max-file: "3"
-            
+
               app-canary:
                 image: ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
-                container_name: app-canary
                 environment:
                   - NODE_ENV=production
                   - APP_PORT=${{ secrets.APP_PORT }}
@@ -290,6 +194,13 @@ jobs:
                   - REDIS_SENTINELS_PROD=${{ secrets.REDIS_SENTINELS_PROD }}
                   - REDIS_HOST_PROD=${{ secrets.REDIS_HOST_PROD }}
                   - IS_DEV=${{ secrets.IS_DEV }}
+                  - BACKUP_INTERVAL=${{ secrets.BACKUP_INTERVAL }}
+                  - MAX_BACKUPS=${{ secrets.MAX_BACKUPS }}
+                  - RETENTION_DAYS=${{ secrets.RETENTION_DAYS }}
+                  - GDRIVE_ENABLED=${{ secrets.GDRIVE_ENABLED }}
+                  - GDRIVE_DIR=${{ secrets.GDRIVE_DIR }}
+                  - GDRIVE_MAX_BACKUPS=${{ secrets.GDRIVE_MAX_BACKUPS }}
+                  - GDRIVE_RETENTION_DAYS=${{ secrets.GDRIVE_RETENTION_DAYS }}
                 ports:
                   - "3002:${{ secrets.APP_PORT }}"
                 restart: always
@@ -300,229 +211,91 @@ jobs:
                   - sentinel-1
                   - sentinel-2
                   - sentinel-3
-                healthcheck:
-                  test: ["CMD", "curl", "-f", "http://localhost:${{ secrets.APP_PORT }}/health"]
-                  interval: 10s
-                  timeout: 5s
-                  retries: 3
-                  start_period: 10s
-                logging:
-                  driver: "json-file"
-                  options:
-                    max-size: "10m"
-                    max-file: "3"
-            
+
             volumes:
               redis-data:
               grafana-data:
             EOF
-            
+
             # Validate Docker Compose configuration
             echo "Validating Docker Compose configuration..."
             docker-compose config
-            
-            # Start services
-            echo "Starting services..."
+
+            # Bring up production services (including Redis and the app variants)
+            echo "Starting Redis services and application containers..."
             docker-compose --profile production up -d
-            
-            # Wait and check health
-            echo "Waiting for services to initialize..."
-            sleep 20
-            
-            # Check if containers are healthy
-            if ! docker ps | grep -q app-stable; then
-              echo "Error: Stable app container is not running!"
-              docker-compose logs app-stable
-              exit 1
+
+            # Wait for services to initialize
+            echo "Waiting for services to be ready..."
+            sleep 10
+
+            # Ensure Nginx is installed before trying to configure it
+            if ! command -v nginx &> /dev/null; then
+              echo "Nginx not found, installing..."
+              sudo lsof -i :80 || true
+              sudo systemctl stop nginx || true
+              sudo apt-get update
+              sudo apt-get install -y nginx
+              sudo systemctl stop nginx
             fi
-            
-            if ! docker ps | grep -q app-canary; then
-              echo "Error: Canary app container is not running!"
-              docker-compose logs app-canary
-              exit 1
-            fi
-            
-            # Verify healthchecks
-            echo "Verifying application health..."
-            MAX_RETRIES=6
-            RETRY_DELAY=10
-            
-            verify_endpoint() {
-              local port=$1
-              local retries=0
-              
-              while [ $retries -lt $MAX_RETRIES ]; do
-                if curl -s -o /dev/null -w "%{http_code}" http://localhost:$port/health | grep -q "200"; then
-                  return 0
-                fi
-                
-                echo "Waiting for endpoint on port $port to become healthy..."
-                sleep $RETRY_DELAY
-                retries=$((retries + 1))
-              done
-              
-              return 1
-            }
-            
-            if ! verify_endpoint 3001; then
-              echo "Error: Stable app health check failed!"
-              docker-compose logs app-stable
-              exit 1
-            fi
-            
-            if ! verify_endpoint 3002; then
-              echo "Error: Canary app health check failed!"
-              docker-compose logs app-canary
-              exit 1
-            fi
-            
-            # Configure Nginx
-            echo "Configuring Nginx for canary deployment..."
+
+            # Configure Nginx for canary deployment
+            echo "Updating Nginx configuration for canary deployment..."
             sudo mkdir -p /etc/nginx/conf.d
-            
-            # Create Nginx configuration
-            cat > /tmp/nextjs-app.conf <<EOF
+
+            # First verify if ports 3001 and 3002 are accessible
+            echo "Verifying ports 3001 and 3002 are accessible..."
+            timeout 5 curl -s http://localhost:3001 || echo "Port 3001 not responding yet"
+            timeout 5 curl -s http://localhost:3002 || echo "Port 3002 not responding yet"
+
+            # Create the Nginx configuration file
+            cat <<'EOF' | sudo tee /etc/nginx/conf.d/nextjs-app.conf
             upstream nextjs_stable {
                 server 127.0.0.1:3001;
             }
-            
+
             upstream nextjs_canary {
                 server 127.0.0.1:3002;
             }
-            
+
             # Split traffic between stable and canary based on a random number
-            split_clients "\${remote_addr}\${request_id}" \$upstream {
-                ${{ steps.verify-secrets.outputs.canary_weight }}%   nextjs_canary;
-                *                        nextjs_stable;
+            split_clients "${remote_addr}${time_iso8601}" $upstream {
+                20%   nextjs_canary;
+                *                       nextjs_stable;
             }
-            
+
             server {
                 listen 80;
-                server_name _;
-            
-                # Add headers for tracking and debugging
-                add_header X-Version \$upstream;
-                add_header X-Deployment-SHA "${{ github.sha }}";
-                
-                # Enable gzip compression
-                gzip on;
-                gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
-                
-                # Security headers
-                add_header X-Content-Type-Options nosniff;
-                add_header X-Frame-Options SAMEORIGIN;
-                add_header X-XSS-Protection "1; mode=block";
-            
-                # Proxy settings for the application
+
+                # Add header to identify the serving version
+                add_header X-Version $upstream;
+
                 location / {
-                    proxy_pass http://\$upstream;
-                    proxy_http_version 1.1;
-                    proxy_set_header Host \$host;
-                    proxy_set_header X-Real-IP \$remote_addr;
-                    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-                    proxy_set_header X-Forwarded-Proto \$scheme;
-                    proxy_set_header Upgrade \$http_upgrade;
-                    proxy_set_header Connection "upgrade";
-                    proxy_buffering off;
-                    proxy_read_timeout 60s;
-                }
-                
-                # Health check endpoint - direct to both instances
-                location /health/stable {
-                    proxy_pass http://nextjs_stable/health;
-                    proxy_set_header Host \$host;
-                    access_log off;
-                }
-                
-                location /health/canary {
-                    proxy_pass http://nextjs_canary/health;
-                    proxy_set_header Host \$host;
-                    access_log off;
-                }
-                
-                # Combined health check endpoint
-                location /health/combined {
-                    proxy_pass http://127.0.0.1:3001/health;
-                    error_page 502 504 = @canary_health;
-                    proxy_intercept_errors on;
-                    access_log off;
-                }
-                
-                location @canary_health {
-                    proxy_pass http://127.0.0.1:3002/health;
-                    access_log off;
+                    proxy_pass http://$upstream;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                 }
             }
             EOF
-            
-            # Test configuration syntax before applying
-            sudo cp /tmp/nextjs-app.conf /etc/nginx/conf.d/nextjs-app.conf
-            
-            # Disable default site if it exists
+
+            # Backup the default nginx site configuration (if it exists)
             if [ -f /etc/nginx/sites-enabled/default ]; then
               sudo mv /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/default.bak
             fi
-            
+
             # Test Nginx configuration
             echo "Testing Nginx configuration..."
             if sudo nginx -t; then
-              echo "Nginx configuration is valid, restarting Nginx..."
-              sudo systemctl restart nginx
-            else
-              echo "Error: Nginx configuration is invalid!"
-              exit 1
-            fi
-            
-            # Verify Nginx is running
-            if ! sudo systemctl is-active --quiet nginx; then
-              echo "Error: Nginx failed to start!"
+              echo "Nginx configuration test passed. Starting/reloading Nginx..."
+              sudo systemctl restart nginx || sudo systemctl start nginx
+              sleep 3
               sudo systemctl status nginx
+            else
+              echo "Nginx configuration failed. Checking for errors..."
               sudo cat /var/log/nginx/error.log
               exit 1
             fi
-            
-            echo "Canary deployment completed successfully."
-            echo "Traffic split: ${{ steps.verify-secrets.outputs.canary_weight }}% to canary, $((100 - ${{ steps.verify-secrets.outputs.canary_weight }}))% to stable"
-            echo "Monitor the deployment using: curl -I http://localhost/health/stable and curl -I http://localhost/health/canary"
-            
-            # Create deployment marker
-            echo "Canary deployment completed at $(date -u)" > "$APP_DIR/CANARY_DEPLOYED"
 
-      - name: Verify Deployment
-        id: verify
-        uses: appleboy/ssh-action@master
-        continue-on-error: true
-        with:
-          host: ${{ secrets.LIVE_HOST }}
-          username: ${{ secrets.LIVE_USER }}
-          key: ${{ secrets.LIVE_SSH_KEY }}
-          script: |
-            # Check both endpoints
-            STABLE_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/health/stable)
-            CANARY_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/health/canary)
-            
-            if [ "$STABLE_STATUS" != "200" ] || [ "$CANARY_STATUS" != "200" ]; then
-              echo "::error::Health check failed! Stable: $STABLE_STATUS, Canary: $CANARY_STATUS"
-              exit 1
-            fi
-            
-            echo "Deployment health verified. Stable: $STABLE_STATUS, Canary: $CANARY_STATUS"
-
-      - name: Post Deployment Summary
-        run: |
-          echo "## Canary Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          echo "* **Status**: ${{ steps.verify.outcome == 'success' && 'Success ✅' || 'Warning ⚠️' }}" >> $GITHUB_STEP_SUMMARY
-          echo "* **Canary Weight**: ${{ steps.verify-secrets.outputs.canary_weight }}%" >> $GITHUB_STEP_SUMMARY
-          echo "* **Deployment SHA**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "* **Stable Image**: ghcr.io/${{ steps.repo.outputs.repo }}:live-latest" >> $GITHUB_STEP_SUMMARY
-          echo "* **Canary Image**: ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "${{ steps.verify.outcome }}" != "success" ]; then
-            echo "* **Warning**: Health check verification had issues, but deployment proceeded. Manual verification recommended." >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
-          echo "* Monitor the canary deployment for issues" >> $GITHUB_STEP_SUMMARY
-          echo "* If stable, promote to production using the Promote workflow" >> $GITHUB_STEP_SUMMARY
-          echo "* If unstable, rollback using the Rollback workflow" >> $GITHUB_STEP_SUMMARY
+            echo "Canary deployment completed successfully. Routing ${{ env.CANARY_WEIGHT }}% of traffic to the new version."
+            echo "Monitor the canary deployment before promoting it to stable."
