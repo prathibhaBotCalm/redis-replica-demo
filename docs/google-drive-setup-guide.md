@@ -57,6 +57,7 @@ rclone config --config=config/rclone/rclone.conf
 ```
 
 2. Follow the prompts to set up a new remote named "gdrive":
+
    - Select "n" for new remote
    - Name: "gdrive"
    - Select the number corresponding to "Google Drive"
@@ -137,11 +138,13 @@ rclone ls gdrive:redis-backups --config=config/rclone/rclone.conf
 To save storage space and bandwidth, you can add compression to your Redis backups:
 
 1. Add the following environment variable to enable compression:
+
    ```
    BACKUP_COMPRESSION=true
    ```
 
 2. In the backup.sh script, add the compression logic before uploading to Google Drive:
+
    ```bash
    if [ "${BACKUP_COMPRESSION}" = true ]; then
        compressed_file="${backup_file}.gz"
@@ -155,6 +158,7 @@ To save storage space and bandwidth, you can add compression to your Redis backu
 For sensitive data, add encryption before storing in Google Drive:
 
 1. Install gpg in the Dockerfile by adding:
+
    ```dockerfile
    RUN apk add --no-cache gnupg
    ```
@@ -184,21 +188,25 @@ The backup service outputs detailed logs that can be integrated with:
 If you're experiencing connection issues to Google Drive:
 
 1. Verify your rclone configuration:
+
    ```bash
    rclone config show --config=config/rclone/rclone.conf
    ```
 
 2. Test rclone connectivity:
+
    ```bash
    rclone lsd gdrive: --config=config/rclone/rclone.conf
    ```
 
 3. Check container logs for specific error messages:
+
    ```bash
    docker logs -f $(docker ps -q -f name=redis-backup)
    ```
 
 4. Refresh authentication:
+
    ```bash
    rclone config reconnect gdrive: --config=config/rclone/rclone.conf
    ```
@@ -209,10 +217,13 @@ If you encounter permission issues:
 
 1. Ensure the backup directory is properly mounted in the Docker container.
 2. Check that the rclone.conf file has appropriate read permissions:
+
    ```bash
    chmod 600 config/rclone/rclone.conf
    ```
+
 3. Verify the container has access to the rclone configuration:
+
    ```bash
    docker exec -it $(docker ps -q -f name=redis-backup) ls -la /config/rclone
    ```
@@ -222,9 +233,11 @@ If you encounter permission issues:
 If backups are failing due to size constraints:
 
 1. Check Google Drive storage quota:
+
    ```bash
    rclone about gdrive: --config=config/rclone/rclone.conf
    ```
+
 2. Adjust MAX_BACKUPS and RETENTION_DAYS to manage storage usage
 3. Consider compressing large RDB files before upload by enabling the BACKUP_COMPRESSION feature
 
@@ -253,6 +266,7 @@ If backups are failing due to size constraints:
 ### Resource Management
 
 1. Configure CPU and memory limits in docker-compose.yml:
+
    ```yaml
    redis-backup:
      # existing configuration...
@@ -264,6 +278,7 @@ If backups are failing due to size constraints:
    ```
 
 2. Schedule backups during low-traffic periods:
+
    ```
    BACKUP_SCHEDULE="0 3 * * *"  # 3 AM daily
    ```

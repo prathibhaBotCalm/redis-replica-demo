@@ -28,11 +28,13 @@ Before you begin, ensure you have the following:
 #### Install Terraform
 
 **macOS (using Homebrew):**
+
 ```bash
 brew install terraform
 ```
 
 **Linux (Ubuntu/Debian):**
+
 ```bash
 sudo apt-get update && sudo apt-get install -y gnupg software-properties-common
 wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg
@@ -41,6 +43,7 @@ sudo apt-get update && sudo apt-get install terraform
 ```
 
 **Check installation:**
+
 ```bash
 terraform --version
 ```
@@ -48,6 +51,7 @@ terraform --version
 #### Generate SSH Key (if needed)
 
 If you don't already have an SSH key pair:
+
 ```bash
 ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
 ```
@@ -57,6 +61,7 @@ ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
 1. **Clone or download the repository containing the configuration files**
 
 2. **Create the project directory structure:**
+
    ```
    project/
    ├── main.tf
@@ -68,6 +73,7 @@ ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
    ```
 
 3. **Make the deploy script executable:**
+
    ```bash
    chmod +x deploy.sh
    ```
@@ -87,11 +93,13 @@ ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
 ### Configure Terraform Variables
 
 1. **Create your terraform.tfvars file:**
+
    ```bash
    cp terraform.tfvars.example terraform.tfvars
    ```
 
 2. **Edit the terraform.tfvars file with your settings:**
+
    ```
    do_token             = "your_digital_ocean_api_token"
    project_name         = "my-application"
@@ -112,15 +120,15 @@ ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
 
 ### Critical Configuration Parameters
 
-| Parameter | Description | Example Value |
-|-----------|-------------|---------------|
-| do_token | Your Digital Ocean API token | "dop_v1_..." |
-| project_name | Name for your project (affects resource naming) | "web-app" |
-| droplet_count | Number of droplets to create | 2 |
-| droplet_size | Size of droplets | "s-2vcpu-2gb" |
-| region | Digital Ocean region | "nyc1" or "sfo3" |
-| environment | Deployment environment | "development", "staging", or "production" |
-| allowed_ssh_ips | IPs allowed to SSH to your droplets | ["123.45.67.89/32"] |
+| Parameter       | Description                                     | Example Value                             |
+| --------------- | ----------------------------------------------- | ----------------------------------------- |
+| do_token        | Your Digital Ocean API token                    | "dop*v1*..."                              |
+| project_name    | Name for your project (affects resource naming) | "web-app"                                 |
+| droplet_count   | Number of droplets to create                    | 2                                         |
+| droplet_size    | Size of droplets                                | "s-2vcpu-2gb"                             |
+| region          | Digital Ocean region                            | "nyc1" or "sfo3"                          |
+| environment     | Deployment environment                          | "development", "staging", or "production" |
+| allowed_ssh_ips | IPs allowed to SSH to your droplets             | ["123.45.67.89/32"]                       |
 
 ## Deployment Workflow
 
@@ -129,33 +137,43 @@ The deployment process is managed through the `deploy.sh` script, which provides
 ### Basic Commands
 
 1. **Initialize Terraform:**
+
    ```bash
    ./deploy.sh init
    ```
+
    This command initializes Terraform, downloads required providers, and checks SSH key configuration.
 
 2. **Create a Deployment Plan:**
+
    ```bash
    ./deploy.sh plan
    ```
+
    This creates a plan of the resources to be created/modified without making actual changes.
 
 3. **Apply the Changes:**
+
    ```bash
    ./deploy.sh apply
    ```
+
    This applies the plan and creates/updates your infrastructure.
 
 4. **View Resource Outputs:**
+
    ```bash
    ./deploy.sh output
    ```
+
    Shows information about created resources, including IP addresses.
 
 5. **Destroy Infrastructure:**
+
    ```bash
    ./deploy.sh destroy
    ```
+
    Removes all created resources from Digital Ocean.
 
 ### Deployment Lifecycle
@@ -163,32 +181,37 @@ The deployment process is managed through the `deploy.sh` script, which provides
 A typical deployment workflow follows these steps:
 
 1. **Initial setup:**
+
    ```bash
    # Configure variables
    cp terraform.tfvars.example terraform.tfvars
    nano terraform.tfvars  # Edit with your values
-   
+
    # Initialize Terraform
    ./deploy.sh init
    ```
 
 2. **First deployment:**
+
    ```bash
    ./deploy.sh plan
    ./deploy.sh apply
    ```
 
 3. **View resource details:**
+
    ```bash
    ./deploy.sh output
    ```
 
 4. **Make changes:**
+
    - Edit `terraform.tfvars` to change configuration
    - Run `./deploy.sh plan` to see what will change
    - Run `./deploy.sh apply` to apply changes
 
 5. **Clean up:**
+
    ```bash
    ./deploy.sh destroy
    ```
@@ -225,16 +248,19 @@ Each droplet is configured with the `setup.sh` script that installs:
 To adjust the size of your deployment:
 
 1. **Change number of droplets:**
+
    ```
    droplet_count = 4
    ```
 
 2. **Upgrade droplet size:**
+
    ```
    droplet_size = "s-4vcpu-8gb"
    ```
-   
+
    Common sizes include:
+
    - s-1vcpu-1gb: 1 vCPU, 1GB RAM
    - s-2vcpu-2gb: 2 vCPU, 2GB RAM
    - s-4vcpu-8gb: 4 vCPU, 8GB RAM
@@ -242,6 +268,7 @@ To adjust the size of your deployment:
 ### Regions
 
 Available regions include:
+
 - nyc1, nyc3: New York
 - sfo3: San Francisco
 - ams3: Amsterdam
@@ -252,6 +279,7 @@ Available regions include:
 - blr1: Bangalore
 
 Example:
+
 ```
 region = "fra1"
 ```
@@ -259,6 +287,7 @@ region = "fra1"
 ### Environment Configuration
 
 Configure different environments by changing:
+
 ```
 environment = "production"
 ```
@@ -295,6 +324,7 @@ To modify the server configuration, edit the `scripts/setup.sh` file. You can ad
 
 **Problem**: Cannot SSH into created droplets  
 **Solutions**:
+
 - Verify your SSH key path in `terraform.tfvars`
 - Check the `allowed_ssh_ips` setting includes your current IP
 - Wait a few minutes for the droplet to complete initialization
@@ -304,6 +334,7 @@ To modify the server configuration, edit the `scripts/setup.sh` file. You can ad
 ### Security
 
 1. **Restrict SSH access**:
+
    ```
    allowed_ssh_ips = ["your_public_ip/32"]
    ```
@@ -319,6 +350,7 @@ To modify the server configuration, edit the `scripts/setup.sh` file. You can ad
 1. **Monitor resources** via the Digital Ocean dashboard
 
 2. **Destroy unused resources**:
+
    ```bash
    ./deploy.sh destroy
    ```
@@ -347,6 +379,7 @@ To add new Digital Ocean resources:
 ### Backup Strategy
 
 1. **State backup**: The Terraform state contains all information about your infrastructure
+
    ```bash
    cp terraform.tfstate terraform.tfstate.backup
    ```
