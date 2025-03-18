@@ -6,34 +6,13 @@ jobs:
   deploy-live-canary:
     runs-on: ubuntu-latest
     name: Deploy to Live Environment (Canary)
-    
-    # Define environment variables for the entire workflow
     env:
       NODE_ENV: production
-      REPO_NAME: ${{ github.repository }}
-      
+      CANARY_WEIGHT: 20
     steps:
-      - name: Set repository name lower-case
-        id: repo
-        run: |
-          repo=$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
-          echo "repo=${repo}" >> $GITHUB_OUTPUT
-
       - name: Verify Live Secrets
         run: |
-          # Define required secrets in an array
-          REQUIRED_SECRETS=(
-            "LIVE_HOST" "LIVE_USER" "LIVE_SSH_KEY" "APP_PORT" 
-            "REDIS_MASTER_PORT" "REDIS_SLAVE_1_PORT" "REDIS_SLAVE_2_PORT" 
-            "REDIS_SLAVE_3_PORT" "REDIS_SLAVE_4_PORT"
-            "SENTINEL_1_PORT" "SENTINEL_2_PORT" "SENTINEL_3_PORT" 
-            "REDIS_PASSWORD" "REDIS_MASTER_NAME" "REDIS_SENTINEL_QUORUM" 
-            "REDIS_HOST_PROD" "REDIS_SENTINELS_PROD" "REDIS_PORT" "CANARY_WEIGHT"
-            "IS_DEV"
-          )
-          
-          # Check each required secret
-          for secret in "${REQUIRED_SECRETS[@]}"; do
+          for secret in LIVE_HOST LIVE_USER LIVE_SSH_KEY APP_PORT REDIS_MASTER_PORT REDIS_SLAVE_1_PORT REDIS_SLAVE_2_PORT SENTINEL_1_PORT SENTINEL_2_PORT SENTINEL_3_PORT REDIS_PASSWORD REDIS_MASTER_NAME REDIS_SENTINEL_QUORUM REDIS_HOST_PROD REDIS_SENTINELS_PROD REDIS_PORT CANARY_WEIGHT; do
             if [ -z "${!secret}" ]; then
               echo "::error::Secret $secret is not set"
               exit 1
@@ -68,8 +47,15 @@ jobs:
           GDRIVE_MAX_BACKUPS: ${{ secrets.GDRIVE_MAX_BACKUPS }}
           GDRIVE_RETENTION_DAYS: ${{ secrets.GDRIVE_RETENTION_DAYS }}
 
+
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Set repository name lower-case
+        id: repo
+        run: |
+          repo=$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
+          echo "repo=${repo}" >> $GITHUB_OUTPUT
 
       - name: Copy deploy files to remote server
         uses: appleboy/scp-action@master
@@ -86,61 +72,33 @@ jobs:
           host: ${{ secrets.LIVE_HOST }}
           username: ${{ secrets.LIVE_USER }}
           key: ${{ secrets.LIVE_SSH_KEY }}
-          envs: |
-            GITHUB_TOKEN,${{ secrets.GITHUB_TOKEN }}
-            GITHUB_ACTOR,${{ github.actor }}
-            LIVE_USER,${{ secrets.LIVE_USER }}
-            APP_PORT,${{ secrets.APP_PORT }}
-            REDIS_MASTER_PORT,${{ secrets.REDIS_MASTER_PORT }}
-            REDIS_SLAVE_1_PORT,${{ secrets.REDIS_SLAVE_1_PORT }}
-            REDIS_SLAVE_2_PORT,${{ secrets.REDIS_SLAVE_2_PORT }}
-            REDIS_SLAVE_3_PORT,${{ secrets.REDIS_SLAVE_3_PORT }}
-            REDIS_SLAVE_4_PORT,${{ secrets.REDIS_SLAVE_4_PORT }}
-            SENTINEL_1_PORT,${{ secrets.SENTINEL_1_PORT }}
-            SENTINEL_2_PORT,${{ secrets.SENTINEL_2_PORT }}
-            SENTINEL_3_PORT,${{ secrets.SENTINEL_3_PORT }}
-            REDIS_PASSWORD,${{ secrets.REDIS_PASSWORD }}
-            REDIS_MASTER_NAME,${{ secrets.REDIS_MASTER_NAME }}
-            REDIS_SENTINEL_QUORUM,${{ secrets.REDIS_SENTINEL_QUORUM }}
-            REDIS_HOST_PROD,${{ secrets.REDIS_HOST_PROD }}
-            REDIS_SENTINELS_PROD,${{ secrets.REDIS_SENTINELS_PROD }}
-            REDIS_PORT,${{ secrets.REDIS_PORT }}
-            CANARY_WEIGHT,${{ secrets.CANARY_WEIGHT }}
-            IS_DEV,${{ secrets.IS_DEV }}
-            REPO,${{ steps.repo.outputs.repo }}
-            GITHUB_SHA,${{ github.sha }}
-            BACKUP_INTERVAL,${{ secrets.BACKUP_INTERVAL }}
-            MAX_BACKUPS,${{ secrets.MAX_BACKUPS }}
-            RETENTION_DAYS,${{ secrets.RETENTION_DAYS }}
-            GDRIVE_ENABLED,${{ secrets.GDRIVE_ENABLED }}
-            GDRIVE_DIR,${{ secrets.GDRIVE_DIR }}
-            GDRIVE_MAX_BACKUPS,${{ secrets.GDRIVE_MAX_BACKUPS }}
-            GDRIVE_RETENTION_DAYS,${{ secrets.GDRIVE_RETENTION_DAYS }}
           script: |
             set -euo pipefail
-            cd /home/${LIVE_USER}/app
+            cd /home/${{ secrets.LIVE_USER }}/app
 
-            # Install required dependencies
-            function ensure_dependency() {
-              local dep_name=$1
-              local install_cmd=$2
-              
-              if ! command -v ${dep_name} &> /dev/null; then
-                echo "${dep_name} not found, installing..."
-                eval "${install_cmd}"
-              else
-                echo "${dep_name} is already installed"
-              fi
-            }
-            
             # Ensure Docker is installed
-            ensure_dependency "docker" "sudo apt-get update && sudo apt-get install -y docker.io && sudo systemctl start docker && sudo systemctl enable docker && sudo usermod -aG docker \$USER"
-            
+            if ! command -v docker &> /dev/null; then
+              echo "Docker not found, installing..."
+              sudo apt-get update
+              sudo apt-get install -y docker.io
+              sudo systemctl start docker
+              sudo systemctl enable docker
+              sudo usermod -aG docker $USER
+            else
+              echo "Docker is already installed"
+            fi
+
             # Ensure Docker Compose is installed
-            ensure_dependency "docker-compose" "sudo curl -L \"https://github.com/docker/compose/releases/download/v2.23.0/docker-compose-\$(uname -s)-\$(uname -m)\" -o /usr/local/bin/docker-compose && sudo chmod +x /usr/local/bin/docker-compose"
+            if ! command -v docker-compose &> /dev/null; then
+              echo "Installing Docker Compose..."
+              sudo curl -L "https://github.com/docker/compose/releases/download/v2.23.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+              sudo chmod +x /usr/local/bin/docker-compose
+            else
+              echo "Docker Compose is already installed"
+            fi
 
             echo "Logging into GHCR..."
-            echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
             # Clean up existing containers
             echo "Cleaning up existing containers..."
@@ -151,58 +109,70 @@ jobs:
               cp .env.example .env
             fi
 
-            # Create environment variables file
-            cat > .env.production << EOF
+            # Append production environment variables to .env
+            cat <<EOF >> .env
             NODE_ENV=production
-            LIVE_USER=${LIVE_USER}
-            APP_PORT=${APP_PORT}
-            REDIS_MASTER_PORT=${REDIS_MASTER_PORT}
-            REDIS_SLAVE_1_PORT=${REDIS_SLAVE_1_PORT}
-            REDIS_SLAVE_2_PORT=${REDIS_SLAVE_2_PORT}
-            REDIS_SLAVE_3_PORT=${REDIS_SLAVE_3_PORT}
-            REDIS_SLAVE_4_PORT=${REDIS_SLAVE_4_PORT}
-            SENTINEL_1_PORT=${SENTINEL_1_PORT}
-            SENTINEL_2_PORT=${SENTINEL_2_PORT}
-            SENTINEL_3_PORT=${SENTINEL_3_PORT}
-            REDIS_PASSWORD=${REDIS_PASSWORD}
-            REDIS_MASTER_NAME=${REDIS_MASTER_NAME}
-            REDIS_SENTINEL_QUORUM=${REDIS_SENTINEL_QUORUM}
-            REDIS_SENTINELS=sentinel-1:${SENTINEL_1_PORT},sentinel-2:${SENTINEL_2_PORT},sentinel-3:${SENTINEL_3_PORT}
-            REDIS_HOST=${REDIS_HOST_PROD}
-            REDIS_PORT=${REDIS_PORT}
-            CANARY_WEIGHT=${CANARY_WEIGHT}
-            REDIS_SENTINELS_PROD=${REDIS_SENTINELS_PROD}
-            REDIS_HOST_PROD=${REDIS_HOST_PROD}
-            IS_DEV=${IS_DEV}
-            BACKUP_INTERVAL=${BACKUP_INTERVAL}
-            MAX_BACKUPS=${MAX_BACKUPS}
-            RETENTION_DAYS=${RETENTION_DAYS}
-            GDRIVE_ENABLED=${GDRIVE_ENABLED}
-            GDRIVE_DIR=${GDRIVE_DIR}
-            GDRIVE_MAX_BACKUPS=${GDRIVE_MAX_BACKUPS}
-            GDRIVE_RETENTION_DAYS=${GDRIVE_RETENTION_DAYS}
-
+            APP_PORT=${{ secrets.APP_PORT }}
+            REDIS_MASTER_PORT=${{ secrets.REDIS_MASTER_PORT }}
+            REDIS_SLAVE_1_PORT=${{ secrets.REDIS_SLAVE_1_PORT }}
+            REDIS_SLAVE_2_PORT=${{ secrets.REDIS_SLAVE_2_PORT }}
+            SENTINEL_1_PORT=${{ secrets.SENTINEL_1_PORT }}
+            SENTINEL_2_PORT=${{ secrets.SENTINEL_2_PORT }}
+            REDIS_SLAVE_3_PORT: ${{ secrets.REDIS_SLAVE_3_PORT }}
+            REDIS_SLAVE_4_PORT: ${{ secrets.REDIS_SLAVE_4_PORT }}
+            SENTINEL_3_PORT=${{ secrets.SENTINEL_3_PORT }}
+            REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
+            REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}
+            REDIS_SENTINEL_QUORUM=${{ secrets.REDIS_SENTINEL_QUORUM }}
+            REDIS_SENTINELS=sentinel-1:${{ secrets.SENTINEL_1_PORT }},sentinel-2:${{ secrets.SENTINEL_2_PORT }},sentinel-3:${{ secrets.SENTINEL_3_PORT }}
+            REDIS_HOST=${{ secrets.REDIS_HOST_PROD }}
+            REDIS_PORT=${{ secrets.REDIS_PORT }}
+            CANARY_WEIGHT=${{ secrets.CANARY_WEIGHT }}
+            REDIS_SENTINELS_PROD=${{ secrets.REDIS_SENTINELS_PROD }}
+            REDIS_HOST_PROD=${{ secrets.REDIS_HOST_PROD }}
+            IS_DEV=${{ secrets.IS_DEV }}
+            BACKUP_INTERVAL=${{ secrets.BACKUP_INTERVAL }}
+            MAX_BACKUPS=${{ secrets.MAX_BACKUPS }}
+            RETENTION_DAYS=${{ secrets.RETENTION_DAYS }}
+            GDRIVE_ENABLED=${{ secrets.GDRIVE_ENABLED }}
+            GDRIVE_DIR=${{ secrets.GDRIVE_DIR }}
+            GDRIVE_MAX_BACKUPS=${{ secrets.GDRIVE_MAX_BACKUPS }}
+            GDRIVE_RETENTION_DAYS=${{ secrets.GDRIVE_RETENTION_DAYS }}
             EOF
-            
-            # Update main .env file with production settings
-            cat .env.production >> .env
 
             # Make any necessary scripts executable
             chmod +x scripts/*.sh
 
             # Pull the latest images for production
             echo "Pulling latest live images..."
-            docker pull ghcr.io/${REPO}:live-latest
-            docker pull ghcr.io/${REPO}:live-${GITHUB_SHA}
+            docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
+            docker pull ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
 
             # Create an override file for the canary deployment
-            cat > docker-compose.override.yml << EOF
+            cat <<EOF > docker-compose.override.yml
             services:
               app-stable:
-                image: ghcr.io/${REPO}:live-latest
-                env_file: .env.production
+                image: ghcr.io/${{ steps.repo.outputs.repo }}:live-latest
+                environment:
+                  - NODE_ENV=production
+                  - APP_PORT=${{ secrets.APP_PORT }}
+                  - REDIS_SENTINELS=sentinel-1:${{ secrets.SENTINEL_1_PORT }},sentinel-2:${{ secrets.SENTINEL_2_PORT }},sentinel-3:${{ secrets.SENTINEL_3_PORT }}
+                  - REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}
+                  - REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
+                  - REDIS_SENTINEL_QUORUM=${{ secrets.REDIS_SENTINEL_QUORUM }}
+                  - CANARY_WEIGHT=${{ secrets.CANARY_WEIGHT }}
+                  - REDIS_SENTINELS_PROD=${{ secrets.REDIS_SENTINELS_PROD }}
+                  - REDIS_HOST_PROD=${{ secrets.REDIS_HOST_PROD }}
+                  - IS_DEV=${{ secrets.IS_DEV }}
+                  - BACKUP_INTERVAL=${{ secrets.BACKUP_INTERVAL }}
+                  - MAX_BACKUPS=${{ secrets.MAX_BACKUPS }}
+                  - RETENTION_DAYS=${{ secrets.RETENTION_DAYS }}
+                  - GDRIVE_ENABLED=${{ secrets.GDRIVE_ENABLED }}
+                  - GDRIVE_DIR=${{ secrets.GDRIVE_DIR }}
+                  - GDRIVE_MAX_BACKUPS=${{ secrets.GDRIVE_MAX_BACKUPS }}
+                  - GDRIVE_RETENTION_DAYS=${{ secrets.GDRIVE_RETENTION_DAYS }}
                 ports:
-                  - "3001:${APP_PORT}"
+                  - "3001:${{ secrets.APP_PORT }}"
                 restart: always
                 networks:
                   - redis-network
@@ -213,10 +183,26 @@ jobs:
                   - sentinel-3
 
               app-canary:
-                image: ghcr.io/${REPO}:live-${GITHUB_SHA}
-                env_file: .env.production
+                image: ghcr.io/${{ steps.repo.outputs.repo }}:live-${{ github.sha }}
+                environment:
+                  - NODE_ENV=production
+                  - APP_PORT=${{ secrets.APP_PORT }}
+                  - REDIS_SENTINELS=sentinel-1:${{ secrets.SENTINEL_1_PORT }},sentinel-2:${{ secrets.SENTINEL_2_PORT }},sentinel-3:${{ secrets.SENTINEL_3_PORT }}
+                  - REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}
+                  - REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
+                  - REDIS_SENTINEL_QUORUM=${{ secrets.REDIS_SENTINEL_QUORUM }}
+                  - REDIS_SENTINELS_PROD=${{ secrets.REDIS_SENTINELS_PROD }}
+                  - REDIS_HOST_PROD=${{ secrets.REDIS_HOST_PROD }}
+                  - IS_DEV=${{ secrets.IS_DEV }}
+                  - BACKUP_INTERVAL=${{ secrets.BACKUP_INTERVAL }}
+                  - MAX_BACKUPS=${{ secrets.MAX_BACKUPS }}
+                  - RETENTION_DAYS=${{ secrets.RETENTION_DAYS }}
+                  - GDRIVE_ENABLED=${{ secrets.GDRIVE_ENABLED }}
+                  - GDRIVE_DIR=${{ secrets.GDRIVE_DIR }}
+                  - GDRIVE_MAX_BACKUPS=${{ secrets.GDRIVE_MAX_BACKUPS }}
+                  - GDRIVE_RETENTION_DAYS=${{ secrets.GDRIVE_RETENTION_DAYS }}
                 ports:
-                  - "3002:${APP_PORT}"
+                  - "3002:${{ secrets.APP_PORT }}"
                 restart: always
                 networks:
                   - redis-network
@@ -243,8 +229,15 @@ jobs:
             echo "Waiting for services to be ready..."
             sleep 10
 
-            # Ensure Nginx is installed
-            ensure_dependency "nginx" "sudo lsof -i :80 || true && sudo systemctl stop nginx || true && sudo apt-get update && sudo apt-get install -y nginx && sudo systemctl stop nginx"
+            # Ensure Nginx is installed before trying to configure it
+            if ! command -v nginx &> /dev/null; then
+              echo "Nginx not found, installing..."
+              sudo lsof -i :80 || true
+              sudo systemctl stop nginx || true
+              sudo apt-get update
+              sudo apt-get install -y nginx
+              sudo systemctl stop nginx
+            fi
 
             # Configure Nginx for canary deployment
             echo "Updating Nginx configuration for canary deployment..."
@@ -267,8 +260,8 @@ jobs:
 
             # Split traffic between stable and canary based on a random number
             split_clients "${remote_addr}${time_iso8601}" $upstream {
-                CANARY_PERCENT%  nextjs_canary;
-                *                nextjs_stable;
+                20%   nextjs_canary;
+                *                       nextjs_stable;
             }
 
             server {
@@ -285,9 +278,6 @@ jobs:
                 }
             }
             EOF
-
-            # Replace the canary weight placeholder
-            sudo sed -i "s/CANARY_PERCENT/${CANARY_WEIGHT}/" /etc/nginx/conf.d/nextjs-app.conf
 
             # Backup the default nginx site configuration (if it exists)
             if [ -f /etc/nginx/sites-enabled/default ]; then
@@ -307,5 +297,5 @@ jobs:
               exit 1
             fi
 
-            echo "Canary deployment completed successfully. Routing ${CANARY_WEIGHT}% of traffic to the new version."
+            echo "Canary deployment completed successfully. Routing ${{ env.CANARY_WEIGHT }}% of traffic to the new version."
             echo "Monitor the canary deployment before promoting it to stable."
