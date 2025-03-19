@@ -1,0 +1,103 @@
+name: Container Security Scanning
+
+on:
+  workflow_call:
+    inputs:
+      fail_on_critical:
+        required: false
+        type: boolean
+        default: true
+        description: "Whether to fail the workflow on critical vulnerabilities"
+    outputs:
+      scan_status:
+        description: "Status of container security scan"
+        value: ${{ jobs.scan-container.outputs.status }}
+
+permissions:
+  contents: read
+  packages: read
+  security-events: write
+
+jobs:
+  scan-container:
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.set-output.outputs.status }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      
+      - name: Download image information
+        uses: actions/download-artifact@v3
+        with:
+          name: image-info
+          path: ./
+      
+      - name: Get image repository and tag
+        id: image-info
+        run: |
+          IMAGE_REPO=$(cat image-repo.txt)
+          IMAGE_TAG=$(cat image-tag.txt)
+          echo "image_repo=$IMAGE_REPO" >> $GITHUB_OUTPUT
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+      
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      
+      - name: Pull Docker image
+        run: docker pull ${{ steps.image-info.outputs.image_repo }}:${{ steps.image-info.outputs.image_tag }}
+      
+      - name: Run Trivy container scan
+        id: trivy-scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.image-info.outputs.image_repo }}:${{ steps.image-info.outputs.image_tag }}
+          format: 'sarif'
+          output: 'trivy-container-results.sarif'
+          severity: 'CRITICAL,HIGH'
+        continue-on-error: true
+          
+      - name: Upload Trivy container scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-container-results.sarif'
+        if: always()
+      
+      - name: Upload container scan report
+        uses: actions/upload-artifact@v3
+        with:
+          name: container-scan-report
+          path: trivy-container-results.sarif
+        if: always()
+      
+      - name: Check for critical vulnerabilities
+        id: check-vulnerabilities
+        run: |
+          # Extract critical vulnerabilities count from Trivy output
+          CRITICAL_COUNT=$(docker run --rm aquasec/trivy:latest ${{ steps.image-info.outputs.image_repo }}:${{ steps.image-info.outputs.image_tag }} -f json | jq '.Results[] | select(.Vulnerabilities != null) | .Vulnerabilities[] | select(.Severity == "CRITICAL")' | jq -s 'length')
+          echo "Found $CRITICAL_COUNT critical vulnerabilities"
+          
+          # Count unfixable critical vulnerabilities
+          UNFIXABLE_CRITICAL=$(docker run --rm aquasec/trivy:latest ${{ steps.image-info.outputs.image_repo }}:${{ steps.image-info.outputs.image_tag }} -f json | jq '.Results[] | select(.Vulnerabilities != null) | .Vulnerabilities[] | select(.Severity == "CRITICAL" and .FixedVersion == null)' | jq -s 'length')
+          echo "Found $UNFIXABLE_CRITICAL unfixable critical vulnerabilities"
+          
+          echo "critical_count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
+          echo "unfixable_critical=$UNFIXABLE_CRITICAL" >> $GITHUB_OUTPUT
+      
+      - name: Set final output status
+        id: set-output
+        run: |
+          if [[ "${{ inputs.fail_on_critical }}" == "true" && "${{ steps.check-vulnerabilities.outputs.unfixable_critical }}" -gt 0 && "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "Failing build due to unfixable critical vulnerabilities in production image"
+            exit 1
+          else
+            echo "status=passed" >> $GITHUB_OUTPUT
+          fi

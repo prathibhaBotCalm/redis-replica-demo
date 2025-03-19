@@ -11,24 +11,36 @@ permissions:
   contents: read
   packages: write
   id-token: write
+  security-events: write
 
 jobs:
+  security-scan:
+    secrets: inherit
+    uses: ./.github/workflows/security-scan.yml
+
+  # Uncomment if you want to add back the sonar_scan job
   # sonar_scan:
   #   secrets: inherit
   #   uses: ./.github/workflows/sonar-scan.yml
 
   build:
-    # needs: sonar_scan
+    needs: security-scan
     uses: ./.github/workflows/build-docker.yml
 
-  deploy-staging:
+  container-scan:
     needs: build
+    uses: ./.github/workflows/scan-container.yml
+    with:
+      fail_on_critical: true
+
+  deploy-staging:
+    needs: [build, container-scan]
     uses: ./.github/workflows/deploy-staging.yml
     secrets: inherit
     if: github.ref == 'refs/heads/dev'
 
   deploy-live-canary:
-    needs: build
+    needs: [build, container-scan]
     uses: ./.github/workflows/deploy-live-canary.yml
     secrets: inherit
     if: github.ref == 'refs/heads/main'

@@ -1,0 +1,105 @@
+name: Security Scanning
+
+on:
+  workflow_call:
+    secrets:
+      SONAR_TOKEN:
+        required: false
+    outputs:
+      security_status:
+        description: "Status of security scans"
+        value: ${{ jobs.security-scan.outputs.status }}
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.set-output.outputs.status }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Fetch all history for proper scanning
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+          cache: 'npm'
+          
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Run npm audit
+        id: npm-audit
+        run: npm audit --audit-level=high || echo "npm-audit-failed=true" >> $GITHUB_ENV
+        continue-on-error: true  # Don't fail the build yet
+      
+      - name: Run dependency check
+        id: dependency-check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'NextJS-App'
+          path: '.'
+          format: 'SARIF'
+          out: 'reports'
+          args: >
+            --enableExperimental
+            --failOnCVSS 7
+        continue-on-error: true  # Don't fail the build yet
+            
+      - name: Upload dependency check results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'reports/dependency-check-report.sarif'
+        if: always()
+          
+      - name: Run CodeQL Analysis
+        id: codeql
+        uses: github/codeql-action/analyze@v2
+        continue-on-error: true  # Don't fail the build yet
+          
+      - name: Run Trivy filesystem scan
+        id: trivy-fs
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+        continue-on-error: true  # Don't fail the build yet
+          
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+        if: always()
+          
+      - name: Package security report
+        run: |
+          mkdir -p security-reports
+          cp reports/* security-reports/ || true
+          cp trivy-results.sarif security-reports/ || true
+        if: always()
+          
+      - name: Upload security reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-reports
+          path: security-reports/
+        if: always()
+      
+      - name: Set final output status
+        id: set-output
+        run: |
+          if [[ "${{ env.npm-audit-failed }}" == "true" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "status=passed" >> $GITHUB_OUTPUT
+          fi
