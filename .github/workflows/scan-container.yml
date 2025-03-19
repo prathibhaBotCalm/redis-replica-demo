@@ -13,14 +13,15 @@ on:
         description: "Status of container security scan"
         value: ${{ jobs.scan-container.outputs.status }}
 
-permissions:
-  contents: read
-  packages: read
-  security-events: write
+# Removed the explicit permissions block
 
 jobs:
   scan-container:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
     outputs:
       status: ${{ steps.set-output.outputs.status }}
     steps:

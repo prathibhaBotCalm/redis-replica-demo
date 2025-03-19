@@ -7,6 +7,7 @@ on:
       - dev
   workflow_dispatch: {}
 
+# Define permissions at the top level that will be inherited by called workflows
 permissions:
   contents: read
   packages: write

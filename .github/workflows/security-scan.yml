@@ -10,14 +10,14 @@ on:
         description: "Status of security scans"
         value: ${{ jobs.security-scan.outputs.status }}
 
-permissions:
-  contents: read
-  security-events: write
-  actions: read
+# Removed the explicit permissions block that was causing issues
 
 jobs:
   security-scan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     outputs:
       status: ${{ steps.set-output.outputs.status }}
     steps:
