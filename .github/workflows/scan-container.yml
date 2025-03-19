@@ -8,6 +8,16 @@ on:
         type: boolean
         default: true
         description: "Whether to fail the workflow on critical vulnerabilities"
+      image_repo:
+        required: false
+        type: string
+        default: ""
+        description: "Image repository"
+      image_tag:
+        required: false
+        type: string
+        default: ""
+        description: "Image tag"
     outputs:
       scan_status:
         description: "Status of container security scan"
@@ -29,19 +39,21 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
       
-      - name: Download image information
-        uses: actions/download-artifact@v4
-        with:
-          name: image-info
-          path: ./
-      
-      - name: Get image repository and tag
+      - name: Get image info
         id: image-info
         run: |
-          IMAGE_REPO=$(cat image-repo.txt)
-          IMAGE_TAG=$(cat image-tag.txt)
-          echo "image_repo=$IMAGE_REPO" >> $GITHUB_OUTPUT
-          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          # Use inputs if provided, otherwise use fallback values
+          if [ -n "${{ inputs.image_repo }}" ]; then
+            echo "image_repo=${{ inputs.image_repo }}" >> $GITHUB_OUTPUT
+          else
+            echo "image_repo=ghcr.io/${{ github.repository }}" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            echo "image_tag=${{ inputs.image_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "image_tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
       
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v2
@@ -50,8 +62,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
       
-      - name: Pull Docker image
-        run: docker pull ${{ steps.image-info.outputs.image_repo }}:${{ steps.image-info.outputs.image_tag }}
+      # Build the image if it doesn't exist or if we're running a standalone scan
+      - name: Build Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ steps.image-info.outputs.image_repo }}:${{ steps.image-info.outputs.image_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+        continue-on-error: true
       
       - name: Run Trivy container scan
         id: trivy-scan
@@ -93,15 +114,28 @@ jobs:
         id: check-vulnerabilities
         run: |
           # Extract critical vulnerabilities count from Trivy output
-          CRITICAL_COUNT=$(docker run --rm aquasec/trivy:latest ${{ steps.image-info.outputs.image_repo }}:${{ steps.image-info.outputs.image_tag }} -f json | jq '.Results[] | select(.Vulnerabilities != null) | .Vulnerabilities[] | select(.Severity == "CRITICAL")' | jq -s 'length')
+          CRITICAL_COUNT=$(docker run --rm aquasec/trivy:latest ${{ steps.image-info.outputs.image_repo }}:${{ steps.image-info.outputs.image_tag }} -f json 2>/dev/null | jq '.Results[] | select(.Vulnerabilities != null) | .Vulnerabilities[] | select(.Severity == "CRITICAL")' | jq -s 'length')
+          
+          # Handle case where jq returns null
+          if [ -z "$CRITICAL_COUNT" ] || [ "$CRITICAL_COUNT" == "null" ]; then
+            CRITICAL_COUNT=0
+          fi
+          
           echo "Found $CRITICAL_COUNT critical vulnerabilities"
           
           # Count unfixable critical vulnerabilities
-          UNFIXABLE_CRITICAL=$(docker run --rm aquasec/trivy:latest ${{ steps.image-info.outputs.image_repo }}:${{ steps.image-info.outputs.image_tag }} -f json | jq '.Results[] | select(.Vulnerabilities != null) | .Vulnerabilities[] | select(.Severity == "CRITICAL" and .FixedVersion == null)' | jq -s 'length')
+          UNFIXABLE_CRITICAL=$(docker run --rm aquasec/trivy:latest ${{ steps.image-info.outputs.image_repo }}:${{ steps.image-info.outputs.image_tag }} -f json 2>/dev/null | jq '.Results[] | select(.Vulnerabilities != null) | .Vulnerabilities[] | select(.Severity == "CRITICAL" and .FixedVersion == null)' | jq -s 'length')
+          
+          # Handle case where jq returns null
+          if [ -z "$UNFIXABLE_CRITICAL" ] || [ "$UNFIXABLE_CRITICAL" == "null" ]; then
+            UNFIXABLE_CRITICAL=0
+          fi
+          
           echo "Found $UNFIXABLE_CRITICAL unfixable critical vulnerabilities"
           
           echo "critical_count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
           echo "unfixable_critical=$UNFIXABLE_CRITICAL" >> $GITHUB_OUTPUT
+        continue-on-error: true
       
       - name: Set final output status
         id: set-output

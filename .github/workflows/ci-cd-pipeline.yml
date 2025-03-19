@@ -7,7 +7,6 @@ on:
       - dev
   workflow_dispatch: {}
 
-# Define permissions at the top level that will be inherited by called workflows
 permissions:
   contents: read
   packages: write
@@ -33,6 +32,11 @@ jobs:
     uses: ./.github/workflows/scan-container.yml
     with:
       fail_on_critical: true
+      # Pass the image info from the build job output if available
+      # If your build-docker.yml workflow doesn't output these values,
+      # you'll need to modify it or use default values as configured in scan-container.yml
+      image_repo: ${{ github.repository_owner }}/${{ github.event.repository.name }}
+      image_tag: ${{ github.sha }}
 
   deploy-staging:
     needs: [build, container-scan]
