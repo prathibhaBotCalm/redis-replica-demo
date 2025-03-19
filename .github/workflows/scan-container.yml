@@ -13,8 +13,6 @@ on:
         description: "Status of container security scan"
         value: ${{ jobs.scan-container.outputs.status }}
 
-# Removed the explicit permissions block
-
 jobs:
   scan-container:
     runs-on: ubuntu-latest
@@ -26,13 +24,14 @@ jobs:
       status: ${{ steps.set-output.outputs.status }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
       
       - name: Download image information
-        uses: actions/download-artifact@v3
+        # Updated to latest version with current syntax
+        uses: actions/download-artifact@v4
         with:
           name: image-info
           path: ./
@@ -72,10 +71,12 @@ jobs:
         if: always()
       
       - name: Upload container scan report
-        uses: actions/upload-artifact@v3
+        # Updated to latest version with current syntax
+        uses: actions/upload-artifact@v4
         with:
           name: container-scan-report
           path: trivy-container-results.sarif
+          retention-days: 5
         if: always()
       
       - name: Check for critical vulnerabilities
