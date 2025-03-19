@@ -30,7 +30,6 @@ jobs:
         uses: docker/setup-buildx-action@v2
       
       - name: Download image information
-        # Updated to latest version with current syntax
         uses: actions/download-artifact@v4
         with:
           name: image-info
@@ -59,23 +58,34 @@ jobs:
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ steps.image-info.outputs.image_repo }}:${{ steps.image-info.outputs.image_tag }}
-          format: 'sarif'
-          output: 'trivy-container-results.sarif'
+          format: 'table'
+          output: 'trivy-container-results.txt'
           severity: 'CRITICAL,HIGH'
         continue-on-error: true
+      
+      - name: Create container scan report directory
+        run: |
+          mkdir -p container-scan-reports
           
-      - name: Upload Trivy container scan results
-        uses: github/codeql-action/upload-sarif@v2
-        with:
-          sarif_file: 'trivy-container-results.sarif'
+          # Copy Trivy container scan results if they exist
+          if [ -f "trivy-container-results.txt" ]; then
+            cp trivy-container-results.txt container-scan-reports/ || true
+          fi
+          
+          # Create summary file
+          echo "# Container Security Scan Summary" > container-scan-reports/summary.md
+          echo "## Scan performed at $(date)" >> container-scan-reports/summary.md
+          echo "## Image: ${{ steps.image-info.outputs.image_repo }}:${{ steps.image-info.outputs.image_tag }}" >> container-scan-reports/summary.md
+          
+          # Create a placeholder file to ensure the directory is not empty
+          touch container-scan-reports/.gitkeep
         if: always()
       
       - name: Upload container scan report
-        # Updated to latest version with current syntax
         uses: actions/upload-artifact@v4
         with:
           name: container-scan-report
-          path: trivy-container-results.sarif
+          path: container-scan-reports/
           retention-days: 5
         if: always()
       

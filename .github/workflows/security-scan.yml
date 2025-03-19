@@ -44,49 +44,64 @@ jobs:
         with:
           project: 'NextJS-App'
           path: '.'
-          format: 'SARIF'
-          out: 'reports'
+          format: 'HTML'
+          out: 'dependency-reports'
           args: >
             --enableExperimental
             --failOnCVSS 7
         continue-on-error: true  # Don't fail the build yet
-            
-      - name: Upload dependency check results
-        uses: github/codeql-action/upload-sarif@v2
-        with:
-          sarif_file: 'reports/dependency-check-report.sarif'
-        if: always()
-          
-      - name: Run CodeQL Analysis
-        id: codeql
-        uses: github/codeql-action/analyze@v2
-        continue-on-error: true  # Don't fail the build yet
-          
+      
       - name: Run Trivy filesystem scan
         id: trivy-fs
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'fs'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
+          format: 'table'
+          output: 'trivy-fs-results.txt'
           severity: 'CRITICAL,HIGH'
         continue-on-error: true  # Don't fail the build yet
-          
-      - name: Upload Trivy scan results
-        uses: github/codeql-action/upload-sarif@v2
+      
+      # Using CodeQL v3 instead of v2 as per warning
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
         with:
-          sarif_file: 'trivy-results.sarif'
-        if: always()
+          languages: javascript, typescript
+      
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:javascript"
+        continue-on-error: true
           
-      - name: Package security report
+      - name: Package security reports
         run: |
           mkdir -p security-reports
-          cp reports/* security-reports/ || true
-          cp trivy-results.sarif security-reports/ || true
+          
+          # Copy dependency check reports if they exist
+          if [ -d "dependency-reports" ]; then
+            cp -r dependency-reports/* security-reports/ || true
+          fi
+          
+          # Copy Trivy results if they exist
+          if [ -f "trivy-fs-results.txt" ]; then
+            cp trivy-fs-results.txt security-reports/ || true
+          fi
+          
+          # Create a summary file
+          echo "# Security Scan Summary" > security-reports/summary.md
+          echo "## Scan performed at $(date)" >> security-reports/summary.md
+          echo "### NPM Audit" >> security-reports/summary.md
+          if [ "${{ env.npm-audit-failed }}" == "true" ]; then
+            echo "- Issues found in NPM audit" >> security-reports/summary.md
+          else
+            echo "- No critical issues found in NPM audit" >> security-reports/summary.md
+          fi
+          
+          # Ensure we have at least one file to upload
+          touch security-reports/.gitkeep
         if: always()
           
       - name: Upload security reports
-        # Updated to latest version with current syntax
         uses: actions/upload-artifact@v4
         with:
           name: security-reports
@@ -97,7 +112,7 @@ jobs:
       - name: Set final output status
         id: set-output
         run: |
-          if [[ "$npm_audit_failed" == "true" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+          if [[ "${{ env.npm-audit-failed }}" == "true" && "${{ github.ref }}" == "refs/heads/main" ]]; then
             echo "status=failed" >> $GITHUB_OUTPUT
             exit 1
           else
