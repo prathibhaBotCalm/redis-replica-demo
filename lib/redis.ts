@@ -795,4 +795,4 @@ function initialize(): void {
 initialize();
 
 // Export public APIs
-export { redisClient as client, redisOmClient };
+export { redisClient, redisOmClient };

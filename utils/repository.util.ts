@@ -1,7 +1,7 @@
 import * as baseLogger from '@/lib/logger';
 import {
   ensureMasterConnection,
-  client as redisClient,
+  redisClient,
   redisOmClient,
 } from '@/lib/redis';
 import { Entity, Repository, Schema } from 'redis-om';
