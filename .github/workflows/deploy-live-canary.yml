@@ -44,6 +44,7 @@ jobs:
           SENTINEL_2_PORT: ${{ secrets.SENTINEL_2_PORT }}
           SENTINEL_3_PORT: ${{ secrets.SENTINEL_3_PORT }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          REDIS_SENTINEL_PASSWORD: ${{ secrets.REDIS_SENTINEL_PASSWORD }}
           REDIS_MASTER_NAME: ${{ secrets.REDIS_MASTER_NAME }}
           REDIS_SENTINEL_QUORUM: ${{ secrets.REDIS_SENTINEL_QUORUM }}
           REDIS_HOST_PROD: ${{ secrets.REDIS_HOST_PROD }}
@@ -131,6 +132,7 @@ jobs:
             SENTINEL_2_PORT=${{ secrets.SENTINEL_2_PORT }}
             SENTINEL_3_PORT=${{ secrets.SENTINEL_3_PORT }}
             REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
+            REDIS_SENTINEL_PASSWORD=${{ secrets.REDIS_SENTINEL_PASSWORD }}
             REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}
             REDIS_SENTINEL_QUORUM=${{ secrets.REDIS_SENTINEL_QUORUM }}
             REDIS_SENTINELS=sentinel-1:${{ secrets.SENTINEL_1_PORT }},sentinel-2:${{ secrets.SENTINEL_2_PORT }},sentinel-3:${{ secrets.SENTINEL_3_PORT }}
@@ -167,6 +169,7 @@ jobs:
               "REDIS_SENTINELS=sentinel-1:${{ secrets.SENTINEL_1_PORT }},sentinel-2:${{ secrets.SENTINEL_2_PORT }},sentinel-3:${{ secrets.SENTINEL_3_PORT }}"
               "REDIS_MASTER_NAME=${{ secrets.REDIS_MASTER_NAME }}"
               "REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}"
+              "REDIS_SENTINEL_PASSWORD=${{ secrets.REDIS_SENTINEL_PASSWORD }}"
               "REDIS_SENTINEL_QUORUM=${{ secrets.REDIS_SENTINEL_QUORUM }}"
               "REDIS_SENTINELS_PROD=${{ secrets.REDIS_SENTINELS_PROD }}"
               "REDIS_HOST_PROD=${{ secrets.REDIS_HOST_PROD }}"
