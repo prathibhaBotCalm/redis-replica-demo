@@ -366,6 +366,7 @@ pipeline {
         
         stage('Deploy Application') {
             steps {
+                echo "Deploying ${env.DEPLOY_TYPE} deployment"
                 script {
                     if (env.DEPLOY_TYPE == 'rollback') {
                         deployRollback()
