@@ -18,7 +18,7 @@ pipeline {
     
     parameters {
         choice(name: 'ENVIRONMENT', choices: ['auto', 'dev', 'staging', 'prod'], description: 'Deployment environment (auto will determine based on branch)')
-        choice(name: 'DEPLOYMENT_TYPE', choices: ['standard', 'canary', 'rollback'], description: 'Deployment type')
+        choice(name: 'DEPLOYMENT_TYPE', choices: ['canary', 'standard', 'rollback'], description: 'Deployment type')
         string(name: 'CANARY_WEIGHT', defaultValue: '20', description: 'Percentage of traffic to route to canary (1-99)')
         string(name: 'ROLLBACK_VERSION', defaultValue: '', description: 'Version to rollback to (required for rollback)')
         string(name: 'REDIS_MAX_ATTEMPTS', defaultValue: '50', description: 'Maximum attempts to wait for Redis readiness')
@@ -34,33 +34,147 @@ pipeline {
     }
     
     stages {
+
+        stage('Initialize Environment Variables') {
+            steps {
+                script {
+                    // Determine if this is a triggered build from GitHub
+                    def isTriggerFromGitHub = false
+                    try {
+                        def causes = currentBuild.getBuildCauses()
+                        causes.each { cause ->
+                            echo "Build cause: ${cause}"
+                            if (cause.toString().contains('github') || 
+                                cause.toString().contains('GitHub') ||
+                                cause.toString().contains('GitHubPushCause') || 
+                                cause.toString().contains('SCMTriggerCause') || 
+                                cause.toString().contains('Remote')) {
+                                isTriggerFromGitHub = true
+                                echo "Detected automatic GitHub trigger"
+                            }
+                        }
+                        
+                        // Additional detection methods
+                        if (!isTriggerFromGitHub && (env.CHANGE_ID != null || env.GIT_COMMIT != null)) {
+                            echo "Detected GitHub trigger via metadata"
+                            isTriggerFromGitHub = true
+                        }
+                    } catch (Exception e) {
+                        echo "Error determining build cause: ${e.getMessage()}"
+                    }
+                    
+                    // Different initialization for automatic vs manual builds
+                    if (isTriggerFromGitHub) {
+                        // For automatic GitHub push builds, use default values that are safe
+                        echo "Automatic build detected - setting default safe values"
+                        
+                        // Get branch name with improved detection
+                        def branch = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceAll('origin/', '')
+                        
+                        if (branch == null || branch.trim() == '') {
+                            try {
+                                def gitOutput = sh(script: "git branch --contains HEAD | grep '*' | cut -d' ' -f2", returnStdout: true).trim()
+                                branch = gitOutput ?: 'unknown'
+                            } catch (Exception e) {
+                                branch = 'unknown'
+                            }
+                        }
+                        
+                        echo "Detected branch: ${branch}"
+                        
+                        // Safer defaults based on the branch
+                        if (branch == 'main' || branch == 'master') {
+                            env.DEPLOY_ENV = 'prod'
+                            env.DEPLOY_TYPE = 'canary'  // Always use canary for automatic main branch builds
+                            env.CANARY_WEIGHT = '20'    // Default to 20% traffic
+                        } else if (branch == 'staging') {
+                            env.DEPLOY_ENV = 'staging'
+                            env.DEPLOY_TYPE = 'standard'
+                        } else {
+                            env.DEPLOY_ENV = 'dev'
+                            env.DEPLOY_TYPE = 'standard'
+                        }
+                    } else {
+                        // For manual builds, use the parameters from the UI
+                        env.DEPLOY_ENV = params.ENVIRONMENT
+                        env.DEPLOY_TYPE = params.DEPLOYMENT_TYPE
+                    }
+                    
+                    echo "Initial environment setting: ${env.DEPLOY_ENV}"
+                    echo "Initial deployment type: ${env.DEPLOY_TYPE}"
+                }
+            }
+        }
+
         // stage('Determine Environment') {
         //     steps {
         //         script {
         //             // Print diagnostic information about environment variables
-        //             echo "Initial environment setting: ${env.DEPLOY_ENV}"
         //             echo "Branch name: ${env.BRANCH_NAME}"
         //             echo "GIT_BRANCH: ${env.GIT_BRANCH}"
                     
-        //             if (env.DEPLOY_ENV == 'auto') {
-        //                 // Auto-detect based on branch name
-        //                 def branch = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceAll('origin/', '')
-        //                 echo "Detected branch: ${branch}"
-                        
-        //                 // Add more robust branch detection
-        //                 if (branch == null || branch.trim() == '') {
-        //                     echo "WARNING: Branch name is empty or null, trying alternate methods"
-        //                     try {
-        //                         def gitOutput = sh(script: "git branch --contains HEAD | grep '*' | cut -d' ' -f2", returnStdout: true).trim()
-        //                         branch = gitOutput ?: 'unknown'
-        //                         echo "Determined branch using git command: ${branch}"
-        //                     } catch (Exception e) {
-        //                         echo "Failed to get branch name: ${e.getMessage()}"
-        //                         branch = 'dev' // Default to dev if we can't determine
-        //                         echo "Defaulting to branch: ${branch}"
+        //             // Determine if this is a triggered build from GitHub
+        //             def isTriggerFromGitHub = false
+                    
+        //             // Print all build causes for debugging
+        //             echo "Debugging build causes:"
+        //             try {
+        //                 def causes = currentBuild.getBuildCauses()
+        //                 causes.each { cause ->
+        //                     echo "Build cause: ${cause}"
+                            
+        //                     // Check for various GitHub-related cause indicators
+        //                     if (cause.toString().contains('github') || 
+        //                         cause.toString().contains('GitHub') ||
+        //                         cause.toString().contains('GitHubPushCause') || 
+        //                         cause.toString().contains('SCMTriggerCause') || 
+        //                         cause.toString().contains('Remote')){
+        //                         isTriggerFromGitHub = true
+        //                         echo "Detected GitHub trigger: true from cause: ${cause}"
         //                     }
         //                 }
                         
+        //                 // Additional detection methods
+        //                 if (!isTriggerFromGitHub && env.CHANGE_ID != null) {
+        //                     echo "Detected GitHub PR via CHANGE_ID: ${env.CHANGE_ID}"
+        //                     isTriggerFromGitHub = true
+        //                 }
+                        
+        //                 // If we have access to GIT_COMMIT, that's another indicator it's a git-triggered build
+        //                 if (!isTriggerFromGitHub && env.GIT_COMMIT != null) {
+        //                     echo "Detected Git trigger via GIT_COMMIT: ${env.GIT_COMMIT}"
+        //                     isTriggerFromGitHub = true
+        //                 }
+        //             } catch (Exception e) {
+        //                 echo "Error determining build cause: ${e.getMessage()}"
+        //             }
+                    
+        //             // Fallback detection - if branch is detected but not manually triggered
+        //             if (!isTriggerFromGitHub && (env.BUILD_CAUSE != 'MANUALTRIGGER') && (branch != null && branch != "")) {
+        //                 echo "Fallback GitHub detection: Branch detected but not manually triggered"
+        //                 isTriggerFromGitHub = true
+        //             }
+                    
+        //             // Get branch name with improved detection
+        //             def branch = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceAll('origin/', '')
+                    
+        //             if (branch == null || branch.trim() == '') {
+        //                 echo "WARNING: Branch name is empty or null, trying alternate methods"
+        //                 try {
+        //                     def gitOutput = sh(script: "git branch --contains HEAD | grep '*' | cut -d' ' -f2", returnStdout: true).trim()
+        //                     branch = gitOutput ?: 'unknown'
+        //                     echo "Determined branch using git command: ${branch}"
+        //                 } catch (Exception e) {
+        //                     echo "Failed to get branch name: ${e.getMessage()}"
+        //                     branch = 'dev' // Default to dev if we can't determine
+        //                     echo "Defaulting to branch: ${branch}"
+        //                 }
+        //             }
+                    
+        //             echo "Resolved branch name: ${branch}"
+                    
+        //             // Set environment based on branch if auto-detect is enabled
+        //             if (env.DEPLOY_ENV == 'auto') {
         //                 // More robust branch determination logic
         //                 if (branch == 'main' || branch == 'master') {
         //                     env.DEPLOY_ENV = 'prod'
@@ -73,8 +187,25 @@ pipeline {
                     
         //             echo "Deploying to environment: ${env.DEPLOY_ENV}"
                     
+        //             // Force canary deployment for main branch, regardless of trigger 
+        //             // when deploying to production
+        //             echo "Current branch is: ${branch}, environment is: ${env.DEPLOY_ENV}, trigger from GitHub: ${isTriggerFromGitHub}"
+                    
+        //             if ((branch == 'main' || branch == 'master')) {
+        //                 // Force canary deployment for production regardless of the trigger source
+        //                 // This ensures all main branch deployments use canary
+        //                 env.DEPLOY_TYPE = 'canary'
+        //                 echo "IMPORTANT: Main branch deployment detected - OVERRIDING deployment type to canary for safety"
+                        
+        //                 // Additional logging for GitHub trigger if detected
+        //                 if (isTriggerFromGitHub) {
+        //                     echo "This appears to be triggered from a GitHub push to main"
+        //                 }
+        //             }
+                    
+        //             echo "Using deployment type: ${env.DEPLOY_TYPE}"
+                    
         //             // Store a separate value for the credential ID determination
-        //             // This is the key fix for auto environment
         //             if (env.DEPLOY_ENV == 'auto') {
         //                 env.CRED_ENV = 'prod'  // Use prod-env-file when auto is detected
         //                 echo "Using credential ID: ${env.CRED_ENV}-env-file for auto environment"
@@ -82,80 +213,15 @@ pipeline {
         //                 env.CRED_ENV = env.DEPLOY_ENV
         //                 echo "Using credential ID: ${env.CRED_ENV}-env-file"
         //             }
-                    
-        //             // Safer check for automatic deployments
-        //             def isTriggerFromGitHub = false
-        //             try {
-        //                 def causes = currentBuild.getBuildCauses()
-        //                 causes.each { cause ->
-        //                     if (cause.toString().contains('github')) {
-        //                         isTriggerFromGitHub = true
-        //                     }
-        //                 }
-        //             } catch (Exception e) {
-        //                 echo "Error determining build cause: ${e.getMessage()}"
-        //             }
-                    
-        //             // Get branch name from environment variables again for safety
-        //             def currentBranch = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceAll('origin/', '')
-                    
-        //             if (currentBranch == 'main' && env.DEPLOY_TYPE == 'standard' && isTriggerFromGitHub) {
-        //                 env.DEPLOY_TYPE = 'canary'
-        //                 echo "Auto-detected prod deployment from GitHub push. Using canary deployment for safety."
-        //             }
         //         }
         //     }
         // }
-        stage('Determine Environment') {
+        stage('Finalize Environment Settings') {
             steps {
                 script {
                     // Print diagnostic information about environment variables
-                    echo "Initial environment setting: ${env.DEPLOY_ENV}"
-                    echo "Initial deployment type: ${env.DEPLOY_TYPE}"
                     echo "Branch name: ${env.BRANCH_NAME}"
                     echo "GIT_BRANCH: ${env.GIT_BRANCH}"
-                    
-                    // Determine if this is a triggered build from GitHub
-                    def isTriggerFromGitHub = false
-                    
-                    // Print all build causes for debugging
-                    echo "Debugging build causes:"
-                    try {
-                        def causes = currentBuild.getBuildCauses()
-                        causes.each { cause ->
-                            echo "Build cause: ${cause}"
-                            
-                            // Check for various GitHub-related cause indicators
-                            if (cause.toString().contains('github') || 
-                                cause.toString().contains('GitHub') ||
-                                cause.toString().contains('GitHubPushCause') || 
-                                cause.toString().contains('SCMTriggerCause') || 
-                                cause.toString().contains('Remote')){
-                                isTriggerFromGitHub = true
-                                echo "Detected GitHub trigger: true from cause: ${cause}"
-                            }
-                        }
-                        
-                        // Additional detection methods
-                        if (!isTriggerFromGitHub && env.CHANGE_ID != null) {
-                            echo "Detected GitHub PR via CHANGE_ID: ${env.CHANGE_ID}"
-                            isTriggerFromGitHub = true
-                        }
-                        
-                        // If we have access to GIT_COMMIT, that's another indicator it's a git-triggered build
-                        if (!isTriggerFromGitHub && env.GIT_COMMIT != null) {
-                            echo "Detected Git trigger via GIT_COMMIT: ${env.GIT_COMMIT}"
-                            isTriggerFromGitHub = true
-                        }
-                    } catch (Exception e) {
-                        echo "Error determining build cause: ${e.getMessage()}"
-                    }
-                    
-                    // Fallback detection - if branch is detected but not manually triggered
-                    if (!isTriggerFromGitHub && (env.BUILD_CAUSE != 'MANUALTRIGGER') && (branch != null && branch != "")) {
-                        echo "Fallback GitHub detection: Branch detected but not manually triggered"
-                        isTriggerFromGitHub = true
-                    }
                     
                     // Get branch name with improved detection
                     def branch = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceAll('origin/', '')
@@ -175,7 +241,7 @@ pipeline {
                     
                     echo "Resolved branch name: ${branch}"
                     
-                    // Set environment based on branch if auto-detect is enabled
+                    // Set environment based on branch if auto-detect is enabled and not already set
                     if (env.DEPLOY_ENV == 'auto') {
                         // More robust branch determination logic
                         if (branch == 'main' || branch == 'master') {
@@ -189,23 +255,15 @@ pipeline {
                     
                     echo "Deploying to environment: ${env.DEPLOY_ENV}"
                     
-                    // Force canary deployment for main branch, regardless of trigger 
-                    // when deploying to production
-                    echo "Current branch is: ${branch}, environment is: ${env.DEPLOY_ENV}, trigger from GitHub: ${isTriggerFromGitHub}"
-                    
-                    if ((branch == 'main' || branch == 'master')) {
-                        // Force canary deployment for production regardless of the trigger source
-                        // This ensures all main branch deployments use canary
+                    // Final deployment type validation - ensure main branch always uses canary deployment
+                    if ((branch == 'main' || branch == 'master') && env.DEPLOY_ENV == 'prod') {
+                        // Force canary deployment for production main branch regardless of what's been set
+                        // This is a safety mechanism
                         env.DEPLOY_TYPE = 'canary'
-                        echo "IMPORTANT: Main branch deployment detected - OVERRIDING deployment type to canary for safety"
-                        
-                        // Additional logging for GitHub trigger if detected
-                        if (isTriggerFromGitHub) {
-                            echo "This appears to be triggered from a GitHub push to main"
-                        }
+                        echo "IMPORTANT: Production main branch deployment detected - OVERRIDING to canary deployment for safety"
                     }
                     
-                    echo "Using deployment type: ${env.DEPLOY_TYPE}"
+                    echo "Final deployment type: ${env.DEPLOY_TYPE}"
                     
                     // Store a separate value for the credential ID determination
                     if (env.DEPLOY_ENV == 'auto') {
@@ -516,7 +574,10 @@ pipeline {
         // }
         stage('Promote Canary') {
             when {
-                expression { env.DEPLOY_TYPE == 'canary' }
+                expression { 
+                    echo "Checking if we should promote canary (DEPLOY_TYPE=${env.DEPLOY_TYPE})"
+                    return env.DEPLOY_TYPE == 'canary'
+                }
             }
             steps {
                 script {
@@ -547,25 +608,40 @@ pipeline {
                         echo "Error determining build cause: ${e.getMessage()}"
                     }
                     
+                    def canaryWeight = env.CANARY_WEIGHT ?: params.CANARY_WEIGHT ?: "20"
+                    echo "Current canary weight: ${canaryWeight}%"
+                    
                     if (isTriggerFromGitHub) {
                         echo "Automated deployment from GitHub push. Monitoring canary for issues..."
                         
-                        // Sleep for a monitoring period (e.g., 5 minutes)
-                        sleep(time: 5, unit: 'MINUTES')
+                        // Sleep for a monitoring period for the canary
+                        def monitoringMinutes = 5
+                        echo "Monitoring canary deployment for ${monitoringMinutes} minutes..."
+                        sleep(time: monitoringMinutes, unit: 'MINUTES')
                         
-                        // Check for any errors in logs or monitoring (simplified example)
-                        def errorCheck = sh(script: "curl -s http://${DROPLET_IP}:3000/api/health | grep -c 'unhealthy' || true", returnStdout: true).trim()
+                        // Check for any errors in logs or monitoring
+                        echo "Checking canary health..."
+                        def healthCheckPort = 3000
+                        def healthCheckPath = "/api/health"
+                        def healthCheckUrl = "http://${DROPLET_IP}:${healthCheckPort}${healthCheckPath}"
                         
-                        if (errorCheck == "0") {
-                            echo "No issues detected in canary. Auto-promoting..."
-                            promoteCanary()
-                        } else {
-                            error "Issues detected in canary deployment. Rolling back."
+                        try {
+                            def response = sh(script: "curl -s -o /dev/null -w '%{http_code}' ${healthCheckUrl}", returnStdout: true).trim()
+                            def errorCheck = sh(script: "curl -s ${healthCheckUrl} | grep -c 'unhealthy' || true", returnStdout: true).trim()
+                            
+                            if (response == "200" && errorCheck == "0") {
+                                echo "No issues detected in canary. Auto-promoting..."
+                                promoteCanary()
+                            } else {
+                                error "Issues detected in canary deployment (response: ${response}, error check: ${errorCheck}). Rolling back."
+                            }
+                        } catch (Exception e) {
+                            error "Error checking canary health: ${e.getMessage()}. Rolling back."
                         }
                     } else {
                         // For manual builds, require human approval
                         timeout(time: DEPLOY_TIMEOUT, unit: 'SECONDS') {
-                            input message: "Canary deployment is serving ${params.CANARY_WEIGHT}% of traffic. Promote to 100%?", ok: 'Promote'
+                            input message: "Canary deployment is serving ${canaryWeight}% of traffic. Promote to 100%?", ok: 'Promote'
                         }
                         
                         promoteCanary()
@@ -712,6 +788,7 @@ def promoteCanary() {
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
                 echo 'APP_IMAGE=${canaryImage}';
                 echo 'DROPLET_IP=${deploymentHost}';
+                echo 'DEPLOY_TYPE=standard';
             } > .env.deployment"
             
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
@@ -730,6 +807,8 @@ def promoteCanary() {
                 export APP_IMAGE='${canaryImage}' && \
                 export DROPLET_IP='${deploymentHost}' && \
                 docker-compose --profile production up -d app"
+                
+            echo "Canary deployment successfully promoted to production"
         """
     }
 }
