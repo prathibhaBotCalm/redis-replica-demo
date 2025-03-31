@@ -5,7 +5,7 @@ services:
   canary:
     image: ${CANARY_IMAGE}
     ports:
-      - '3001:${APP_PORT}'  # Exposed on a different port
+      - '3001:${APP_PORT}' # Exposed on a different port
     volumes:
       - app-logs:/app/logs
     networks:
@@ -21,33 +21,33 @@ services:
       - .env
       - .env.deployment
     labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.canary.rule=Host(`${DROPLET_IP}`)"
-      - "traefik.http.services.canary.loadbalancer.server.port=${APP_PORT}"
-      - "traefik.http.routers.canary.middlewares=canary-splitter"
-      - "traefik.http.middlewares.canary-splitter.traffic.weight.services.canary.weight=${CANARY_WEIGHT}"
-      - "traefik.http.middlewares.canary-splitter.traffic.weight.services.app.weight=$((100-CANARY_WEIGHT))"
-      - "traefik.http.routers.canary.entrypoints=web"
+      - 'traefik.enable=true'
+      - 'traefik.http.routers.canary.rule=Host(`${DROPLET_IP}`)'
+      - 'traefik.http.services.canary.loadbalancer.server.port=${APP_PORT}'
+      - 'traefik.http.routers.canary.middlewares=canary-splitter'
+      - 'traefik.http.middlewares.canary-splitter.traffic.weight.services.canary.weight=${CANARY_WEIGHT}'
+      - 'traefik.http.middlewares.canary-splitter.traffic.weight.services.app.weight=$((100-CANARY_WEIGHT))'
+      - 'traefik.http.routers.canary.entrypoints=web'
 
   # Traefik reverse proxy for canary deployment
   traefik:
     image: traefik:v2.8
     command:
-      - "--api.insecure=true"
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--entrypoints.web.address=:80"
-      - "--entrypoints.web-secure.address=:443"
-      - "--providers.docker.network=monitoring-network"
-      - "--accesslog=true"
-      - "--log.level=DEBUG"
+      - '--api.insecure=true'
+      - '--providers.docker=true'
+      - '--providers.docker.exposedbydefault=false'
+      - '--entrypoints.web.address=:80'
+      - '--entrypoints.web-secure.address=:443'
+      - '--providers.docker.network=monitoring-network'
+      - '--accesslog=true'
+      - '--log.level=DEBUG'
     ports:
-      - "80:80"
-      - "443:443"
-      - "8080:8080"  # Traefik dashboard
+      - '80:80'
+      - '443:443'
+      - '8080:8080' # Traefik dashboard
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/traefik.yml:/opt/app/traefik/traefik.yml:ro
     networks:
       - redis-network
       - monitoring-network
