@@ -214,7 +214,6 @@ pipeline {
                     file(credentialsId: "${env.CRED_ENV}-env-file", variable: 'ENV_FILE')
                 ]) {
                     script {
-                        // Fix 1: Break down the complex SSH commands into smaller, manageable chunks
                         // Create deployment directory structure
                         sh """
                             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}"
@@ -226,7 +225,7 @@ pipeline {
                             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/grafana/datasources"
                         """
                         
-                        // Fix 2: Copy the environment file with robust error handling
+                        // Copy the environment file with robust error handling
                         try {
                             // Check if ENV_FILE exists
                             sh "ls -la \"${ENV_FILE}\" || echo 'WARNING: ENV_FILE not found!'"
@@ -238,22 +237,6 @@ pipeline {
                                     echo "DEPLOY_ENV=${env.DEPLOY_ENV}" > default.env
                                     echo "APP_VERSION=${env.APP_VERSION}" >> default.env
                                     echo "DROPLET_IP=${DROPLET_IP}" >> default.env
-                                    echo "APP_PORT=3000" >> default.env
-                                    echo "REDIS_PASSWORD=redispassword" >> default.env
-                                    echo "REDIS_MASTER_NAME=mymaster" >> default.env
-                                    echo "REDIS_SENTINEL_QUORUM=2" >> default.env
-                                    echo "REDIS_MASTER_PORT=6379" >> default.env
-                                    echo "REDIS_SLAVE_1_PORT=6380" >> default.env
-                                    echo "REDIS_SLAVE_2_PORT=6381" >> default.env
-                                    echo "REDIS_SLAVE_3_PORT=6382" >> default.env
-                                    echo "REDIS_SLAVE_4_PORT=6383" >> default.env
-                                    echo "SENTINEL_1_PORT=26379" >> default.env
-                                    echo "SENTINEL_2_PORT=26380" >> default.env
-                                    echo "SENTINEL_3_PORT=26381" >> default.env
-                                    echo "BACKUP_INTERVAL=600" >> default.env
-                                    echo "MAX_BACKUPS=24" >> default.env
-                                    echo "RETENTION_DAYS=7" >> default.env
-                                    echo "GDRIVE_ENABLED=false" >> default.env
                                     scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no default.env ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env
                                 else
                                     scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no "${ENV_FILE}" ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env
@@ -261,220 +244,51 @@ pipeline {
                             """
                         } catch (Exception e) {
                             echo "Error handling env file: ${e.getMessage()}"
-                            // Create emergency env file
                             sh """
-                                echo "Creating emergency .env file due to error"
-                                echo "DEPLOY_ENV=${env.DEPLOY_ENV}" > emergency.env
-                                echo "APP_VERSION=${env.APP_VERSION}" >> emergency.env
-                                echo "DROPLET_IP=${DROPLET_IP}" >> emergency.env
-                                echo "APP_PORT=3000" >> emergency.env
-                                echo "REDIS_PASSWORD=redispassword" >> emergency.env
-                                echo "REDIS_MASTER_NAME=mymaster" >> emergency.env
-                                echo "REDIS_SENTINEL_QUORUM=2" >> emergency.env
-                                echo "REDIS_MASTER_PORT=6379" >> emergency.env
-                                echo "REDIS_SLAVE_1_PORT=6380" >> emergency.env
-                                echo "REDIS_SLAVE_2_PORT=6381" >> emergency.env
-                                echo "REDIS_SLAVE_3_PORT=6382" >> emergency.env
-                                echo "REDIS_SLAVE_4_PORT=6383" >> emergency.env
-                                echo "SENTINEL_1_PORT=26379" >> emergency.env
-                                echo "SENTINEL_2_PORT=26380" >> emergency.env
-                                echo "SENTINEL_3_PORT=26381" >> emergency.env
-                                echo "BACKUP_INTERVAL=600" >> emergency.env
-                                echo "MAX_BACKUPS=24" >> emergency.env
-                                echo "RETENTION_DAYS=7" >> emergency.env
-                                echo "GDRIVE_ENABLED=false" >> emergency.env
-                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no emergency.env ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env
+                                echo "Using .env file from repository instead"
+                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no .env ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env
                             """
                         }
                         
-                        // Fix 3: Add DROPLET_IP to env file with cleaner approach
+                        // Add DROPLET_IP to env file
                         sh """
                             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "grep -q 'DROPLET_IP=' ${DEPLOYMENT_DIR}/.env || echo 'DROPLET_IP=${DROPLET_IP}' >> ${DEPLOYMENT_DIR}/.env"
                         """
                         
-                        // Fix 4: Copy compose files safely
+                        // Copy configuration files from repository
                         sh """
-                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/
-                            [ -f docker-compose.canary.yml ] && scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no docker-compose.canary.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/ || echo "No canary compose file found"
+                            # Copy docker-compose files
+                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no docker-compose*.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/
+                            
+                            # Copy Traefik configuration
+                            if [ -d "traefik" ]; then
+                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no traefik/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/traefik/
+                            fi
+                            
+                            # Copy scripts
+                            if [ -d "scripts" ]; then
+                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no scripts/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/scripts/
+                                ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "chmod +x ${DEPLOYMENT_DIR}/scripts/*.sh"
+                            fi
+                            
+                            # Copy Prometheus configuration if it exists
+                            if [ -f "prometheus.yml" ]; then
+                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no prometheus.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/
+                            fi
+                            
+                            # Copy Grafana configuration if it exists
+                            if [ -d "grafana" ]; then
+                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no grafana/datasources/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/grafana/datasources/
+                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no grafana/dashboards/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/grafana/dashboards/
+                            fi
+                            
+                            # Copy rclone configuration if it exists
+                            if [ -d "config/rclone" ]; then
+                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no config/rclone/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/config/rclone/
+                            fi
                         """
                         
-                        // Fix 5: Create Redis init scripts - split into separate commands
-                        def masterScript = '''#!/bin/bash
-echo "Redis master configuration"
-redis-server --requirepass "${REDIS_PASSWORD}"
-'''
-                        
-                        def slaveScript = '''#!/bin/bash
-echo "Redis slave configuration"
-redis-server --slaveof ${REDIS_MASTER_HOST} ${REDIS_MASTER_PORT} --requirepass "${REDIS_PASSWORD}" --masterauth "${REDIS_PASSWORD}"
-'''
-                        
-                        // Write scripts to temporary files and copy them over
-                        writeFile file: 'temp-init-master.sh', text: masterScript
-                        writeFile file: 'temp-init-slave.sh', text: slaveScript
-                        
-                        sh """
-                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no temp-init-master.sh ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/scripts/init-master.sh
-                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no temp-init-slave.sh ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/scripts/init-slave.sh
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "chmod +x ${DEPLOYMENT_DIR}/scripts/init-master.sh"
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "chmod +x ${DEPLOYMENT_DIR}/scripts/init-slave.sh"
-                        """
-                        
-                        // Create a Dockerfile for Redis backup
-                        def redisBackupDockerfile = '''FROM alpine:latest
-
-RUN apk add --no-cache bash redis rclone curl
-
-COPY backup.sh /backup.sh
-RUN chmod +x /backup.sh
-
-CMD ["/backup.sh"]
-'''
-
-                        def backupScript = '''#!/bin/bash
-set -e
-
-BACKUP_DIR="/backup"
-DATA_DIR="/data"
-TIMESTAMP=$(date +%Y%m%d%H%M%S)
-FILENAME="redis-dump-${TIMESTAMP}.rdb"
-
-# Ensure backup directory exists
-mkdir -p ${BACKUP_DIR}
-
-echo "Starting Redis backup at $(date)"
-
-# Copy the existing RDB file to backup directory
-if [ -f "${DATA_DIR}/dump.rdb" ]; then
-    cp ${DATA_DIR}/dump.rdb ${BACKUP_DIR}/${FILENAME}
-    echo "Backup created: ${BACKUP_DIR}/${FILENAME}"
-else
-    echo "Error: Redis dump file not found at ${DATA_DIR}/dump.rdb"
-    exit 1
-fi
-
-# Clean up old backups based on retention settings
-if [ "${MAX_BACKUPS}" -gt 0 ]; then
-    echo "Cleaning up old backups, keeping last ${MAX_BACKUPS}"
-    cd ${BACKUP_DIR} && ls -tp redis-dump-*.rdb | grep -v '/$' | tail -n +$((${MAX_BACKUPS}+1)) | xargs -I {} rm {} || true
-fi
-
-# Upload to Google Drive if enabled
-if [ "${GDRIVE_ENABLED}" = "true" ]; then
-    echo "Uploading backup to Google Drive"
-    if [ -f /config/rclone/rclone.conf ]; then
-        rclone --config=/config/rclone/rclone.conf copy ${BACKUP_DIR}/${FILENAME} gdrive:${GDRIVE_DIR}/
-        
-        # Clean up old backups in Google Drive
-        if [ "${GDRIVE_MAX_BACKUPS}" -gt 0 ]; then
-            echo "Cleaning up old backups in Google Drive, keeping last ${GDRIVE_MAX_BACKUPS}"
-            OLDER_THAN="$(date -d "${GDRIVE_RETENTION_DAYS} days ago" +%Y-%m-%d)"
-            rclone --config=/config/rclone/rclone.conf delete --min-age ${OLDER_THAN} gdrive:${GDRIVE_DIR}/ || true
-        fi
-    else
-        echo "Error: rclone configuration not found"
-    fi
-fi
-
-echo "Backup completed at $(date)"
-
-# Sleep for the specified interval before the next backup
-echo "Next backup in ${BACKUP_INTERVAL} seconds"
-sleep ${BACKUP_INTERVAL}
-'''
-
-                        // Write Dockerfile and backup script
-                        writeFile file: 'Dockerfile.redis-backup', text: redisBackupDockerfile
-                        writeFile file: 'backup.sh', text: backupScript
-                        
-                        // Create scripts directory and Dockerfile on remote server
-                        sh """
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/scripts"
-                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no Dockerfile.redis-backup ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/scripts/Dockerfile.redis-backup
-                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no backup.sh ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/scripts/backup.sh
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "chmod +x ${DEPLOYMENT_DIR}/scripts/backup.sh"
-                        """
-                        
-                        // Create a simple prometheus.yml file for monitoring
-                        def prometheusConfig = '''global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
-
-scrape_configs:
-  - job_name: 'prometheus'
-    static_configs:
-      - targets: ['localhost:9090']
-
-  - job_name: 'redis'
-    static_configs:
-      - targets: ['redis-exporter-master:9121']
-      - targets: ['redis-exporter-slave1:9121']
-      - targets: ['redis-exporter-slave2:9121']
-      - targets: ['redis-exporter-slave3:9121']
-      - targets: ['redis-exporter-slave4:9121']
-
-  - job_name: 'cadvisor'
-    static_configs:
-      - targets: ['cadvisor:8080']
-
-  - job_name: 'nextjs'
-    metrics_path: '/api/metrics'
-    static_configs:
-      - targets: ['app:3000']
-'''
-                        writeFile file: 'prometheus.yml', text: prometheusConfig
-                        sh "scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no prometheus.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/prometheus.yml"
-                        
-                        // Fix 6: Handle traefik configuration more safely
-                        if (fileExists('traefik/traefik.yml')) {
-                            sh "scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no traefik/traefik.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/traefik/"
-                        } else {
-                            def traefikConfig = '''api:
-  dashboard: true
-  insecure: true
-
-entryPoints:
-  web:
-    address: ":80"
-  metrics:
-    address: ":8082"
-
-providers:
-  docker:
-    endpoint: "unix:///var/run/docker.sock"
-    exposedByDefault: false
-    network: monitoring-network
-
-metrics:
-  prometheus:
-    entryPoint: metrics
-    addServicesLabels: true
-    addEntryPointsLabels: true
-
-log:
-  level: DEBUG
-'''
-                            writeFile file: 'temp-traefik.yml', text: traefikConfig
-                            sh "scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no temp-traefik.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/traefik/traefik.yml"
-                        }
-                        
-                        // Create basic grafana datasource and dashboard configs
-                        def grafanaDatasource = '''apiVersion: 1
-
-datasources:
-  - name: Prometheus
-    type: prometheus
-    access: proxy
-    url: http://prometheus:9090
-    isDefault: true
-'''
-                        writeFile file: 'datasources.yml', text: grafanaDatasource
-                        sh """
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/grafana/datasources"
-                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no datasources.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/grafana/datasources/datasources.yml"
-                        """
-                        
-                        // Fix 7: Create docker networks with safer approach
+                        // Create docker networks with safer approach
                         sh """
                             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} 'docker network ls | grep redis-network || docker network create redis-network'
                             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} 'docker network ls | grep monitoring-network || docker network create monitoring-network'
@@ -501,7 +315,7 @@ datasources:
         stage('Health Check') {
             steps {
                 script {
-                    def healthCheckPort = env.DEPLOY_ENV == 'prod' ? 3000 : 3000
+                    def healthCheckPort = 3000
                     def healthCheckPath = "/api/health"
                     def healthCheckUrl = "http://${DROPLET_IP}:${healthCheckPort}${healthCheckPath}"
                     
