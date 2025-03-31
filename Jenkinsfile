@@ -34,33 +34,121 @@ pipeline {
     }
     
     stages {
+        // stage('Determine Environment') {
+        //     steps {
+        //         script {
+        //             // Print diagnostic information about environment variables
+        //             echo "Initial environment setting: ${env.DEPLOY_ENV}"
+        //             echo "Branch name: ${env.BRANCH_NAME}"
+        //             echo "GIT_BRANCH: ${env.GIT_BRANCH}"
+                    
+        //             if (env.DEPLOY_ENV == 'auto') {
+        //                 // Auto-detect based on branch name
+        //                 def branch = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceAll('origin/', '')
+        //                 echo "Detected branch: ${branch}"
+                        
+        //                 // Add more robust branch detection
+        //                 if (branch == null || branch.trim() == '') {
+        //                     echo "WARNING: Branch name is empty or null, trying alternate methods"
+        //                     try {
+        //                         def gitOutput = sh(script: "git branch --contains HEAD | grep '*' | cut -d' ' -f2", returnStdout: true).trim()
+        //                         branch = gitOutput ?: 'unknown'
+        //                         echo "Determined branch using git command: ${branch}"
+        //                     } catch (Exception e) {
+        //                         echo "Failed to get branch name: ${e.getMessage()}"
+        //                         branch = 'dev' // Default to dev if we can't determine
+        //                         echo "Defaulting to branch: ${branch}"
+        //                     }
+        //                 }
+                        
+        //                 // More robust branch determination logic
+        //                 if (branch == 'main' || branch == 'master') {
+        //                     env.DEPLOY_ENV = 'prod'
+        //                 } else if (branch == 'staging') {
+        //                     env.DEPLOY_ENV = 'staging'
+        //                 } else {
+        //                     env.DEPLOY_ENV = 'dev'
+        //                 }
+        //             }
+                    
+        //             echo "Deploying to environment: ${env.DEPLOY_ENV}"
+                    
+        //             // Store a separate value for the credential ID determination
+        //             // This is the key fix for auto environment
+        //             if (env.DEPLOY_ENV == 'auto') {
+        //                 env.CRED_ENV = 'prod'  // Use prod-env-file when auto is detected
+        //                 echo "Using credential ID: ${env.CRED_ENV}-env-file for auto environment"
+        //             } else {
+        //                 env.CRED_ENV = env.DEPLOY_ENV
+        //                 echo "Using credential ID: ${env.CRED_ENV}-env-file"
+        //             }
+                    
+        //             // Safer check for automatic deployments
+        //             def isTriggerFromGitHub = false
+        //             try {
+        //                 def causes = currentBuild.getBuildCauses()
+        //                 causes.each { cause ->
+        //                     if (cause.toString().contains('github')) {
+        //                         isTriggerFromGitHub = true
+        //                     }
+        //                 }
+        //             } catch (Exception e) {
+        //                 echo "Error determining build cause: ${e.getMessage()}"
+        //             }
+                    
+        //             // Get branch name from environment variables again for safety
+        //             def currentBranch = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceAll('origin/', '')
+                    
+        //             if (currentBranch == 'main' && env.DEPLOY_TYPE == 'standard' && isTriggerFromGitHub) {
+        //                 env.DEPLOY_TYPE = 'canary'
+        //                 echo "Auto-detected prod deployment from GitHub push. Using canary deployment for safety."
+        //             }
+        //         }
+        //     }
+        // }
         stage('Determine Environment') {
             steps {
                 script {
                     // Print diagnostic information about environment variables
                     echo "Initial environment setting: ${env.DEPLOY_ENV}"
+                    echo "Initial deployment type: ${env.DEPLOY_TYPE}"
                     echo "Branch name: ${env.BRANCH_NAME}"
                     echo "GIT_BRANCH: ${env.GIT_BRANCH}"
                     
-                    if (env.DEPLOY_ENV == 'auto') {
-                        // Auto-detect based on branch name
-                        def branch = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceAll('origin/', '')
-                        echo "Detected branch: ${branch}"
-                        
-                        // Add more robust branch detection
-                        if (branch == null || branch.trim() == '') {
-                            echo "WARNING: Branch name is empty or null, trying alternate methods"
-                            try {
-                                def gitOutput = sh(script: "git branch --contains HEAD | grep '*' | cut -d' ' -f2", returnStdout: true).trim()
-                                branch = gitOutput ?: 'unknown'
-                                echo "Determined branch using git command: ${branch}"
-                            } catch (Exception e) {
-                                echo "Failed to get branch name: ${e.getMessage()}"
-                                branch = 'dev' // Default to dev if we can't determine
-                                echo "Defaulting to branch: ${branch}"
+                    // Determine if this is a triggered build from GitHub
+                    def isTriggerFromGitHub = false
+                    try {
+                        def causes = currentBuild.getBuildCauses()
+                        causes.each { cause ->
+                            if (cause.toString().contains('github')) {
+                                isTriggerFromGitHub = true
+                                echo "Detected GitHub trigger: true"
                             }
                         }
-                        
+                    } catch (Exception e) {
+                        echo "Error determining build cause: ${e.getMessage()}"
+                    }
+                    
+                    // Get branch name with improved detection
+                    def branch = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceAll('origin/', '')
+                    
+                    if (branch == null || branch.trim() == '') {
+                        echo "WARNING: Branch name is empty or null, trying alternate methods"
+                        try {
+                            def gitOutput = sh(script: "git branch --contains HEAD | grep '*' | cut -d' ' -f2", returnStdout: true).trim()
+                            branch = gitOutput ?: 'unknown'
+                            echo "Determined branch using git command: ${branch}"
+                        } catch (Exception e) {
+                            echo "Failed to get branch name: ${e.getMessage()}"
+                            branch = 'dev' // Default to dev if we can't determine
+                            echo "Defaulting to branch: ${branch}"
+                        }
+                    }
+                    
+                    echo "Resolved branch name: ${branch}"
+                    
+                    // Set environment based on branch if auto-detect is enabled
+                    if (env.DEPLOY_ENV == 'auto') {
                         // More robust branch determination logic
                         if (branch == 'main' || branch == 'master') {
                             env.DEPLOY_ENV = 'prod'
@@ -73,35 +161,21 @@ pipeline {
                     
                     echo "Deploying to environment: ${env.DEPLOY_ENV}"
                     
+                    // Force canary deployment for main branch pushes from GitHub
+                    if ((branch == 'main' || branch == 'master') && isTriggerFromGitHub) {
+                        env.DEPLOY_TYPE = 'canary'
+                        echo "GitHub push to main branch detected - OVERRIDING deployment type to canary for safety"
+                    }
+                    
+                    echo "Using deployment type: ${env.DEPLOY_TYPE}"
+                    
                     // Store a separate value for the credential ID determination
-                    // This is the key fix for auto environment
                     if (env.DEPLOY_ENV == 'auto') {
                         env.CRED_ENV = 'prod'  // Use prod-env-file when auto is detected
                         echo "Using credential ID: ${env.CRED_ENV}-env-file for auto environment"
                     } else {
                         env.CRED_ENV = env.DEPLOY_ENV
                         echo "Using credential ID: ${env.CRED_ENV}-env-file"
-                    }
-                    
-                    // Safer check for automatic deployments
-                    def isTriggerFromGitHub = false
-                    try {
-                        def causes = currentBuild.getBuildCauses()
-                        causes.each { cause ->
-                            if (cause.toString().contains('github')) {
-                                isTriggerFromGitHub = true
-                            }
-                        }
-                    } catch (Exception e) {
-                        echo "Error determining build cause: ${e.getMessage()}"
-                    }
-                    
-                    // Get branch name from environment variables again for safety
-                    def currentBranch = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceAll('origin/', '')
-                    
-                    if (currentBranch == 'main' && env.DEPLOY_TYPE == 'standard' && isTriggerFromGitHub) {
-                        env.DEPLOY_TYPE = 'canary'
-                        echo "Auto-detected prod deployment from GitHub push. Using canary deployment for safety."
                     }
                 }
             }
