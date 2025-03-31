@@ -13,7 +13,7 @@ pipeline {
         DROPLET_IP = "128.199.87.188" // Your Digital Ocean droplet IP
         DEPLOYMENT_DIR = "/opt/app" // Deployment directory
         DEPLOY_ENV = "${params.ENVIRONMENT ?: 'auto'}" // Will be overridden if auto-detected
-        DEPLOY_TYPE = "${params.DEPLOYMENT_TYPE ?: 'standard'}" // Default deployment type
+        DEPLOY_TYPE = "${params.DEPLOYMENT_TYPE ?: 'canary'}" // Default deployment type
     }
     
     parameters {
@@ -207,6 +207,7 @@ pipeline {
                 script {
                     // Print diagnostic information about credentials
                     echo "Current environment: ${env.DEPLOY_ENV}"
+                    echo "Deployment type: ${env.DEPLOY_TYPE}"
                     echo "Credential environment: ${env.CRED_ENV}"
                     echo "Credentials ID to look for: ${env.CRED_ENV}-env-file"
                 }
