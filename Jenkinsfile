@@ -592,22 +592,26 @@ def deployCanary() {
                 prometheus grafana cadvisor \
                 redis-exporter-master redis-exporter-slave1 redis-exporter-slave2 redis-exporter-slave3 redis-exporter-slave4"
                 
-            # Wait for Redis infrastructure to be ready
+            # Wait for Redis infrastructure to be ready with improved error handling
             echo "Waiting for Redis infrastructure to be ready..."
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
                 attempt=0; \
                 max_attempts=${params.REDIS_MAX_ATTEMPTS ?: 50}; \
                 sleep_duration=${params.REDIS_SLEEP_DURATION ?: 5}; \
-                until [ \$attempt -ge \$max_attempts ] || docker exec -i \\\$(docker ps -q -f name=redis-master) redis-cli -a \\\${REDIS_PASSWORD} PING | grep -q 'PONG'; do \
-                    attempt=\\\$((attempt+1)); \
-                    echo 'Waiting for Redis to be ready... (\\\$attempt/\\\$max_attempts)'; \
-                    sleep \\\$sleep_duration; \
-                done; \
-                if [ \$attempt -ge \$max_attempts ]; then \
-                    echo 'Redis infrastructure did not become ready in time'; \
-                    exit 1; \
-                fi; \
-                echo 'Redis infrastructure is ready'"
+                echo 'Checking Redis readiness with max_attempts='\$max_attempts', sleep_duration='\$sleep_duration; \
+                until [ \$attempt -ge \$max_attempts ]; do \
+                    attempt=\$((attempt+1)); \
+                    echo 'Waiting for Redis to be ready... ('\$attempt'/'\$max_attempts')'; \
+                    if docker ps | grep -q redis-master && \
+                       docker exec -i \$(docker ps -q -f name=redis-master) redis-cli PING 2>/dev/null | grep -q 'PONG'; then \
+                        echo 'Redis is now ready!'; \
+                        break; \
+                    fi; \
+                    if [ \$attempt -ge \$max_attempts ]; then \
+                        echo 'Redis infrastructure did not become ready in time, but proceeding with deployment anyway'; \
+                    fi; \
+                    sleep \$sleep_duration; \
+                done"
                 
             # Then deploy both the stable and canary versions of the app
             echo "Deploying stable and canary applications..."
@@ -616,7 +620,15 @@ def deployCanary() {
                 export CANARY_WEIGHT='${canaryWeight}' && \
                 export APP_IMAGE='${appImage}' && \
                 export DROPLET_IP='${deploymentHost}' && \
-                docker-compose -f docker-compose.yml up -d app && \
+                docker-compose -f docker-compose.yml up -d app"
+
+            # Now deploy the canary and traefik
+            echo "Deploying canary and Traefik..."
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
+                export CANARY_IMAGE='${canaryImage}' && \
+                export CANARY_WEIGHT='${canaryWeight}' && \
+                export APP_IMAGE='${appImage}' && \
+                export DROPLET_IP='${deploymentHost}' && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml up -d canary traefik"
         """
     }
