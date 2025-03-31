@@ -52,28 +52,9 @@ pipeline {
             }
         }
 
-        stage('Checkout') {
+        sstage('Checkout') {
             steps {
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: '*/main']], // Default branch
-                    extensions: [
-                        [$class: 'CloneOption', depth: 1, shallow: true], // Shallow clone
-                        [$class: 'CleanCheckout'], // Clean workspace before checkout
-                        [$class: 'LocalBranch', localBranch: '**'] // Checkout as local branch
-                    ],
-                    userRemoteConfigs: [[url: 'https://github.com/your-repo/your-project.git']]
-                ])
-                
-                script {
-                    // Get proper git commit information
-                    env.GIT_COMMIT = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
-                    env.GIT_COMMIT_SHORT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-                    env.GIT_BRANCH = env.BRANCH_NAME ?: sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()
-                    
-                    // Update display name with git info
-                    currentBuild.displayName = "#${BUILD_NUMBER} - ${env.GIT_BRANCH}@${env.GIT_COMMIT_SHORT}"
-                }
+                checkout scm
             }
         }
 
