@@ -52,7 +52,7 @@ pipeline {
             }
         }
 
-        sstage('Checkout') {
+        stage('Checkout') {
             steps {
                 checkout scm
             }
