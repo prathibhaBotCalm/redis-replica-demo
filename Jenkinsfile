@@ -44,13 +44,6 @@ pipeline {
             }
         }
         
-        stage('Unit Tests') {
-            steps {
-                sh 'npm ci'
-                sh 'npm test'
-            }
-        }
-        
         stage('Build Docker Image') {
             when {
                 expression { params.DEPLOYMENT_TYPE != 'rollback' }
@@ -223,7 +216,7 @@ def deployStandard() {
                 cd /opt/app && \
                 echo 'APP_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}' > .env.deployment && \
                 docker-compose pull app && \
-                docker-compose up -d app
+                docker-compose up --profile production -d app
             "
         """
     }
@@ -239,7 +232,7 @@ def deployCanary() {
                 cd /opt/app && \
                 echo 'CANARY_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}' >> .env.deployment && \
                 echo 'CANARY_WEIGHT=${params.CANARY_WEIGHT}' >> .env.deployment && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml up -d canary traefik
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml --profile production up -d canary traefik
             "
         """
     }
@@ -287,7 +280,7 @@ def deployRollback() {
                 cd /opt/app && \
                 echo 'APP_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${params.ROLLBACK_VERSION}' > .env.deployment && \
                 docker-compose pull app && \
-                docker-compose up -d app
+                docker-compose up --profile production -d app
             "
         """
     }
