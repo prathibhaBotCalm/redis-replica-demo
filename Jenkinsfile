@@ -648,22 +648,24 @@ def promoteCanary() {
                 echo 'DEPLOY_TYPE=standard';
             } > .env.deployment"
             
+            # Instead of stopping Traefik, reconfigure it to route all traffic to the app
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
+                echo 'traefik.http.middlewares.canary-splitter.traffic.weight.services.canary.weight=0';
+                echo 'traefik.http.middlewares.canary-splitter.traffic.weight.services.app.weight=100';
+            } >> .env.deployment"
+            
+            # Stop and remove the canary service
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
                 export APP_IMAGE='${canaryImage}' && \
                 export DROPLET_IP='${deploymentHost}' && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary || true && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true"
             
-            # Also stop and remove Traefik if it's running
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop traefik || true && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f traefik || true"
-            
-            # Restart the main app with the canary image
+            # Restart the main app with the canary image, but keep Traefik running
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
                 export APP_IMAGE='${canaryImage}' && \
                 export DROPLET_IP='${deploymentHost}' && \
-                docker-compose --profile production up -d app"
+                docker-compose -f docker-compose.yml --profile production up -d app traefik"
                 
             echo "Canary deployment successfully promoted to production"
         """
