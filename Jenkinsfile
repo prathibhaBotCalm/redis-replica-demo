@@ -12,24 +12,66 @@ pipeline {
         DEPLOY_TIMEOUT = 600 // 10 minutes timeout for deployment validation
         DROPLET_IP = "128.199.87.188" // Your Digital Ocean droplet IP
         DEPLOYMENT_DIR = "/opt/app" // Deployment directory
+        DEPLOY_ENV = "${params.ENVIRONMENT ?: 'auto'}" // Will be overridden if auto-detected
+        DEPLOY_TYPE = "${params.DEPLOYMENT_TYPE ?: 'standard'}" // Default deployment type
     }
     
     parameters {
-        choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'prod'], description: 'Deployment environment')
+        choice(name: 'ENVIRONMENT', choices: ['auto', 'dev', 'staging', 'prod'], description: 'Deployment environment (auto will determine based on branch)')
         choice(name: 'DEPLOYMENT_TYPE', choices: ['standard', 'canary', 'rollback'], description: 'Deployment type')
         string(name: 'CANARY_WEIGHT', defaultValue: '20', description: 'Percentage of traffic to route to canary (1-99)')
         string(name: 'ROLLBACK_VERSION', defaultValue: '', description: 'Version to rollback to (required for rollback)')
     }
     
+    triggers {
+        // Poll SCM every minute for changes
+        pollSCM('* * * * *')
+        
+        // GitHub webhook trigger (requires GitHub plugin)
+        githubPush()
+    }
+    
     stages {
+        stage('Determine Environment') {
+            steps {
+                script {
+                    if (env.DEPLOY_ENV == 'auto') {
+                        // Auto-detect based on branch name
+                        def branch = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceAll('origin/', '')
+                        echo "Detected branch: ${branch}"
+                        
+                        switch(branch) {
+                            case 'main':
+                            case 'master':
+                                env.DEPLOY_ENV = 'prod'
+                                break
+                            case 'staging':
+                                env.DEPLOY_ENV = 'staging'
+                                break
+                            default:
+                                env.DEPLOY_ENV = 'dev'
+                        }
+                    }
+                    
+                    echo "Deploying to environment: ${env.DEPLOY_ENV}"
+                    
+                    // For automatic deployments to prod, default to canary for safety
+                    if (env.DEPLOY_ENV == 'prod' && !params.DEPLOYMENT_TYPE && currentBuild.getBuildCauses()[0].toString().contains('github')) {
+                        env.DEPLOY_TYPE = 'canary'
+                        echo "Auto-detected prod deployment from GitHub push. Using canary deployment for safety."
+                    }
+                }
+            }
+        }
+
         stage('Validate Parameters') {
             steps {
                 script {
-                    if (params.DEPLOYMENT_TYPE == 'rollback' && params.ROLLBACK_VERSION == '') {
+                    if (env.DEPLOY_TYPE == 'rollback' && params.ROLLBACK_VERSION == '') {
                         error "Rollback version is required for rollback deployment type"
                     }
                     
-                    if (params.DEPLOYMENT_TYPE == 'canary') {
+                    if (env.DEPLOY_TYPE == 'canary') {
                         def canaryWeight = params.CANARY_WEIGHT.toInteger()
                         if (canaryWeight < 1 || canaryWeight > 99) {
                             error "Canary weight must be between 1 and 99"
@@ -47,14 +89,14 @@ pipeline {
         
         stage('Build Docker Image') {
             when {
-                expression { params.DEPLOYMENT_TYPE != 'rollback' }
+                expression { env.DEPLOY_TYPE != 'rollback' }
             }
             steps {
                 script {
                     try {
                         sh "docker build -t ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG} ."
                         
-                        if (params.DEPLOYMENT_TYPE == 'canary') {
+                        if (env.DEPLOY_TYPE == 'canary') {
                             sh "docker tag ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG} ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
                         }
                     } catch (Exception e) {
@@ -70,7 +112,7 @@ pipeline {
         
         stage('Push Docker Image') {
             when {
-                expression { params.DEPLOYMENT_TYPE != 'rollback' }
+                expression { env.DEPLOY_TYPE != 'rollback' }
             }
             steps {
                 withCredentials([usernamePassword(credentialsId: 'docker-registry-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASSWORD')]) {
@@ -78,7 +120,7 @@ pipeline {
                     sh "docker push ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
                     
                     script {
-                        if (params.DEPLOYMENT_TYPE == 'canary') {
+                        if (env.DEPLOY_TYPE == 'canary') {
                             sh "docker push ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
                         }
                     }
@@ -93,14 +135,14 @@ pipeline {
                     def composeFile = 'docker-compose.yml'
                     
                     // Create environment-specific .env file
-                    if (params.ENVIRONMENT == 'dev') {
+                    if (env.DEPLOY_ENV == 'dev') {
                         sh "sed -i 's/IS_DEV=false/IS_DEV=true/g' ${envFile}"
                         sh "sed -i 's/REDIS_SENTINELS_PROD/REDIS_SENTINELS_DEV/g' ${composeFile}"
                         sh "sed -i 's/REDIS_HOST_PROD/REDIS_HOST_DEV/g' ${composeFile}"
                     }
                     
                     // Update canary deployment settings if needed
-                    if (params.DEPLOYMENT_TYPE == 'canary') {
+                    if (env.DEPLOY_TYPE == 'canary') {
                         sh "sed -i 's/CANARY_WEIGHT=.*/CANARY_WEIGHT=${params.CANARY_WEIGHT}/g' ${envFile}"
                     }
                     
@@ -121,7 +163,7 @@ pipeline {
             steps {
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
-                    file(credentialsId: "${params.ENVIRONMENT}-env-file", variable: 'ENV_FILE')
+                    file(credentialsId: "${env.DEPLOY_ENV}-env-file", variable: 'ENV_FILE')
                 ]) {
                     script {
                         def deploymentHost = env.DROPLET_IP
@@ -238,9 +280,9 @@ EOF
         stage('Deploy Application') {
             steps {
                 script {
-                    if (params.DEPLOYMENT_TYPE == 'rollback') {
+                    if (env.DEPLOY_TYPE == 'rollback') {
                         deployRollback()
-                    } else if (params.DEPLOYMENT_TYPE == 'canary') {
+                    } else if (env.DEPLOY_TYPE == 'canary') {
                         deployCanary()
                     } else {
                         deployStandard()
@@ -252,7 +294,7 @@ EOF
         stage('Health Check') {
             steps {
                 script {
-                    def healthCheckPort = params.ENVIRONMENT == 'prod' ? 3000 : 3000
+                    def healthCheckPort = env.DEPLOY_ENV == 'prod' ? 3000 : 3000
                     def healthCheckPath = "/api/health"
                     def healthCheckUrl = "http://${DROPLET_IP}:${healthCheckPort}${healthCheckPath}"
                     
@@ -289,15 +331,35 @@ EOF
         
         stage('Promote Canary') {
             when {
-                expression { params.DEPLOYMENT_TYPE == 'canary' }
+                expression { env.DEPLOY_TYPE == 'canary' }
             }
             steps {
-                timeout(time: DEPLOY_TIMEOUT, unit: 'SECONDS') {
-                    input message: "Canary deployment is serving ${params.CANARY_WEIGHT}% of traffic. Promote to 100%?", ok: 'Promote'
-                }
-                
                 script {
-                    promoteCanary()
+                    // For automatic builds, we can optionally set a timeout and then auto-promote
+                    // if no issues are detected during the canary phase
+                    if (currentBuild.getBuildCauses()[0].toString().contains('github')) {
+                        echo "Automated deployment from GitHub push. Monitoring canary for issues..."
+                        
+                        // Sleep for a monitoring period (e.g., 5 minutes)
+                        sleep(time: 5, unit: 'MINUTES')
+                        
+                        // Check for any errors in logs or monitoring (simplified example)
+                        def errorCheck = sh(script: "curl -s http://${DROPLET_IP}:3000/api/health | grep -c 'unhealthy' || true", returnStdout: true).trim()
+                        
+                        if (errorCheck == "0") {
+                            echo "No issues detected in canary. Auto-promoting..."
+                            promoteCanary()
+                        } else {
+                            error "Issues detected in canary deployment. Rolling back."
+                        }
+                    } else {
+                        // For manual builds, require human approval
+                        timeout(time: DEPLOY_TIMEOUT, unit: 'SECONDS') {
+                            input message: "Canary deployment is serving ${params.CANARY_WEIGHT}% of traffic. Promote to 100%?", ok: 'Promote'
+                        }
+                        
+                        promoteCanary()
+                    }
                 }
             }
         }
@@ -305,7 +367,7 @@ EOF
         stage('Cleanup') {
             steps {
                 script {
-                    if (params.DEPLOYMENT_TYPE == 'canary') {
+                    if (env.DEPLOY_TYPE == 'canary') {
                         sh "docker rmi ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG} || true"
                     }
                     
@@ -319,15 +381,27 @@ EOF
                 }
             }
         }
+        
+        stage('Notify Success') {
+            steps {
+                echo "Successfully deployed to ${env.DEPLOY_ENV} environment using ${env.DEPLOY_TYPE} deployment strategy."
+                
+                // Add notification integrations here if needed
+                // For example, Slack, Email, MS Teams notifications
+            }
+        }
     }
     
     post {
         failure {
             script {
-                if (params.DEPLOYMENT_TYPE == 'canary') {
+                if (env.DEPLOY_TYPE == 'canary') {
                     echo "Canary deployment failed, rolling back"
                     rollbackCanary()
                 }
+                
+                // Add failure notifications here
+                echo "Deployment to ${env.DEPLOY_ENV} environment failed!"
             }
         }
         success {
@@ -335,6 +409,8 @@ EOF
         }
     }
 }
+
+// Helper functions for deployment strategies would be the same as in your current Jenkinsfile
 
 // Helper functions for deployment strategies
 def deployStandard() {
