@@ -117,16 +117,44 @@ pipeline {
                     
                     // Determine if this is a triggered build from GitHub
                     def isTriggerFromGitHub = false
+                    
+                    // Print all build causes for debugging
+                    echo "Debugging build causes:"
                     try {
                         def causes = currentBuild.getBuildCauses()
                         causes.each { cause ->
-                            if (cause.toString().contains('github')) {
+                            echo "Build cause: ${cause}"
+                            
+                            // Check for various GitHub-related cause indicators
+                            if (cause.toString().contains('github') || 
+                                cause.toString().contains('GitHub') ||
+                                cause.toString().contains('GitHubPushCause') || 
+                                cause.toString().contains('SCMTriggerCause') || 
+                                cause.toString().contains('Remote')){
                                 isTriggerFromGitHub = true
-                                echo "Detected GitHub trigger: true"
+                                echo "Detected GitHub trigger: true from cause: ${cause}"
                             }
+                        }
+                        
+                        // Additional detection methods
+                        if (!isTriggerFromGitHub && env.CHANGE_ID != null) {
+                            echo "Detected GitHub PR via CHANGE_ID: ${env.CHANGE_ID}"
+                            isTriggerFromGitHub = true
+                        }
+                        
+                        // If we have access to GIT_COMMIT, that's another indicator it's a git-triggered build
+                        if (!isTriggerFromGitHub && env.GIT_COMMIT != null) {
+                            echo "Detected Git trigger via GIT_COMMIT: ${env.GIT_COMMIT}"
+                            isTriggerFromGitHub = true
                         }
                     } catch (Exception e) {
                         echo "Error determining build cause: ${e.getMessage()}"
+                    }
+                    
+                    // Fallback detection - if branch is detected but not manually triggered
+                    if (!isTriggerFromGitHub && (env.BUILD_CAUSE != 'MANUALTRIGGER') && (branch != null && branch != "")) {
+                        echo "Fallback GitHub detection: Branch detected but not manually triggered"
+                        isTriggerFromGitHub = true
                     }
                     
                     // Get branch name with improved detection
@@ -161,10 +189,20 @@ pipeline {
                     
                     echo "Deploying to environment: ${env.DEPLOY_ENV}"
                     
-                    // Force canary deployment for main branch pushes from GitHub
-                    if ((branch == 'main' || branch == 'master') && isTriggerFromGitHub) {
+                    // Force canary deployment for main branch, regardless of trigger 
+                    // when deploying to production
+                    echo "Current branch is: ${branch}, environment is: ${env.DEPLOY_ENV}, trigger from GitHub: ${isTriggerFromGitHub}"
+                    
+                    if ((branch == 'main' || branch == 'master')) {
+                        // Force canary deployment for production regardless of the trigger source
+                        // This ensures all main branch deployments use canary
                         env.DEPLOY_TYPE = 'canary'
-                        echo "GitHub push to main branch detected - OVERRIDING deployment type to canary for safety"
+                        echo "IMPORTANT: Main branch deployment detected - OVERRIDING deployment type to canary for safety"
+                        
+                        // Additional logging for GitHub trigger if detected
+                        if (isTriggerFromGitHub) {
+                            echo "This appears to be triggered from a GitHub push to main"
+                        }
                     }
                     
                     echo "Using deployment type: ${env.DEPLOY_TYPE}"
@@ -430,6 +468,52 @@ pipeline {
             }
         }
         
+        // stage('Promote Canary') {
+        //     when {
+        //         expression { env.DEPLOY_TYPE == 'canary' }
+        //     }
+        //     steps {
+        //         script {
+        //             // For automatic builds, we can optionally set a timeout and then auto-promote
+        //             // if no issues are detected during the canary phase
+        //             def isTriggerFromGitHub = false
+        //             try {
+        //                 def causes = currentBuild.getBuildCauses()
+        //                 causes.each { cause ->
+        //                     if (cause.toString().contains('github')) {
+        //                         isTriggerFromGitHub = true
+        //                     }
+        //                 }
+        //             } catch (Exception e) {
+        //                 echo "Error determining build cause: ${e.getMessage()}"
+        //             }
+                    
+        //             if (isTriggerFromGitHub) {
+        //                 echo "Automated deployment from GitHub push. Monitoring canary for issues..."
+                        
+        //                 // Sleep for a monitoring period (e.g., 5 minutes)
+        //                 sleep(time: 5, unit: 'MINUTES')
+                        
+        //                 // Check for any errors in logs or monitoring (simplified example)
+        //                 def errorCheck = sh(script: "curl -s http://${DROPLET_IP}:3000/api/health | grep -c 'unhealthy' || true", returnStdout: true).trim()
+                        
+        //                 if (errorCheck == "0") {
+        //                     echo "No issues detected in canary. Auto-promoting..."
+        //                     promoteCanary()
+        //                 } else {
+        //                     error "Issues detected in canary deployment. Rolling back."
+        //                 }
+        //             } else {
+        //                 // For manual builds, require human approval
+        //                 timeout(time: DEPLOY_TIMEOUT, unit: 'SECONDS') {
+        //                     input message: "Canary deployment is serving ${params.CANARY_WEIGHT}% of traffic. Promote to 100%?", ok: 'Promote'
+        //                 }
+                        
+        //                 promoteCanary()
+        //             }
+        //         }
+        //     }
+        // }
         stage('Promote Canary') {
             when {
                 expression { env.DEPLOY_TYPE == 'canary' }
@@ -439,12 +523,25 @@ pipeline {
                     // For automatic builds, we can optionally set a timeout and then auto-promote
                     // if no issues are detected during the canary phase
                     def isTriggerFromGitHub = false
+                    echo "Checking if build was triggered from GitHub..."
                     try {
                         def causes = currentBuild.getBuildCauses()
                         causes.each { cause ->
-                            if (cause.toString().contains('github')) {
+                            echo "Promote stage - Build cause: ${cause}"
+                            if (cause.toString().contains('github') || 
+                                cause.toString().contains('GitHub') ||
+                                cause.toString().contains('GitHubPushCause') || 
+                                cause.toString().contains('SCMTriggerCause') || 
+                                cause.toString().contains('Remote')) {
                                 isTriggerFromGitHub = true
+                                echo "Detected GitHub trigger in promote stage"
                             }
+                        }
+                        
+                        // Also check for branch and git commit presence as trigger indicators
+                        if (!isTriggerFromGitHub && (env.GIT_COMMIT != null || env.BRANCH_NAME != null)) {
+                            echo "Assuming GitHub trigger based on Git metadata being present"
+                            isTriggerFromGitHub = true
                         }
                     } catch (Exception e) {
                         echo "Error determining build cause: ${e.getMessage()}"
