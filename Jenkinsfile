@@ -166,82 +166,68 @@ pipeline {
                     file(credentialsId: "${env.DEPLOY_ENV}-env-file", variable: 'ENV_FILE')
                 ]) {
                     script {
-                        def deploymentHost = env.DROPLET_IP
-                        def deploymentDir = env.DEPLOYMENT_DIR
+                        // Fix 1: Break down the complex SSH commands into smaller, manageable chunks
+                        // Create deployment directory structure
+                        sh """
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}"
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/traefik"
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/scripts"
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/backup"
+                        """
                         
-                        // Create deployment directory and required subdirectories
-                        sh '''
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
-                                mkdir -p ''' + "${deploymentDir}" + ''' && \
-                                mkdir -p ''' + "${deploymentDir}/traefik" + ''' && \
-                                mkdir -p ''' + "${deploymentDir}/scripts" + '''
-                            "
-                        '''
+                        // Fix 2: Copy the environment file with simpler command
+                        sh "scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no \"${ENV_FILE}\" ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env"
                         
-                        // Copy the environment-specific env file from Jenkins credentials
-                        sh '''
-                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no "${ENV_FILE}" ''' + "${SSH_USER}@${deploymentHost}:${deploymentDir}/.env" + '''
-                        '''
+                        // Fix 3: Add DROPLET_IP to env file with cleaner approach
+                        sh """
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "grep -q 'DROPLET_IP=' ${DEPLOYMENT_DIR}/.env || echo 'DROPLET_IP=${DROPLET_IP}' >> ${DEPLOYMENT_DIR}/.env"
+                        """
                         
-                        // Add DROPLET_IP to env file if not present
-                        sh '''
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
-                                grep -q 'DROPLET_IP=' ''' + "${deploymentDir}/.env" + ''' || echo 'DROPLET_IP=''' + "${deploymentHost}" + '''' >> ''' + "${deploymentDir}/.env" + '''
-                            "
-                        '''
+                        // Fix 4: Copy compose files safely
+                        sh """
+                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/
+                            [ -f docker-compose.canary.yml ] && scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no docker-compose.canary.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/ || echo "No canary compose file found"
+                        """
                         
-                        // Copy necessary files to deployment target using more secure approach
-                        sh '''
-                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no docker-compose.yml ''' + "${SSH_USER}@${deploymentHost}:${deploymentDir}/" + '''
-                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no docker-compose.canary.yml ''' + "${SSH_USER}@${deploymentHost}:${deploymentDir}/" + '''
-                        '''
-                        
-                        // Create directory structure for Redis scripts
-                        sh '''
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
-                                mkdir -p ''' + "${deploymentDir}/scripts" + '''
-                                
-                                # Create minimal Redis master init script if it doesn't exist
-                                cat > ''' + "${deploymentDir}/scripts/init-master.sh" + ''' << 'EOF'
-#!/bin/bash
+                        // Fix 5: Create Redis init scripts - split into separate commands
+                        def masterScript = '''#!/bin/bash
 echo "Redis master configuration"
 redis-server --requirepass "${REDIS_PASSWORD}"
-EOF
-                                
-                                # Create minimal Redis slave init script if it doesn't exist
-                                cat > ''' + "${deploymentDir}/scripts/init-slave.sh" + ''' << 'EOF'
-#!/bin/bash
+'''
+                        
+                        def slaveScript = '''#!/bin/bash
 echo "Redis slave configuration"
 redis-server --slaveof ${REDIS_MASTER_HOST} ${REDIS_MASTER_PORT} --requirepass "${REDIS_PASSWORD}" --masterauth "${REDIS_PASSWORD}"
-EOF
-
-                                # Make scripts executable
-                                chmod +x ''' + "${deploymentDir}/scripts/init-master.sh" + '''
-                                chmod +x ''' + "${deploymentDir}/scripts/init-slave.sh" + '''
-                            "
-                        '''
+'''
                         
-                        // Check if traefik directory exists and create minimal config if needed
-                        sh '''
-                            if [ -d "traefik" ] && [ -f "traefik/traefik.yml" ]; then
-                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no traefik/traefik.yml ''' + "${SSH_USER}@${deploymentHost}:${deploymentDir}/traefik/" + '''
-                            else
-                                ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
-                                    echo "Traefik config not found, creating minimal config"
-                                    cat > ''' + "${deploymentDir}/traefik/traefik.yml" + ''' << EOF
-api:
+                        // Write scripts to temporary files and copy them over
+                        writeFile file: 'temp-init-master.sh', text: masterScript
+                        writeFile file: 'temp-init-slave.sh', text: slaveScript
+                        
+                        sh """
+                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no temp-init-master.sh ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/scripts/init-master.sh
+                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no temp-init-slave.sh ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/scripts/init-slave.sh
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "chmod +x ${DEPLOYMENT_DIR}/scripts/init-master.sh"
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "chmod +x ${DEPLOYMENT_DIR}/scripts/init-slave.sh"
+                        """
+                        
+                        // Fix 6: Handle traefik configuration more safely
+                        if (fileExists('traefik/traefik.yml')) {
+                            sh "scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no traefik/traefik.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/traefik/"
+                        } else {
+                            def traefikConfig = '''api:
   dashboard: true
   insecure: true
 
 entryPoints:
   web:
-    address: \":80\"
+    address: ":80"
   metrics:
-    address: \":8082\"
+    address: ":8082"
 
 providers:
   docker:
-    endpoint: \"unix:///var/run/docker.sock\"
+    endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
     network: monitoring-network
 
@@ -253,25 +239,16 @@ metrics:
 
 log:
   level: DEBUG
-EOF
-                                "
-                            fi
-                        '''
+'''
+                            writeFile file: 'temp-traefik.yml', text: traefikConfig
+                            sh "scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no temp-traefik.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/traefik/traefik.yml"
+                        }
                         
-                        // Create backup directories
-                        sh '''
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
-                                mkdir -p ''' + "${deploymentDir}/backup" + '''
-                            "
-                        '''
-                        
-                        // Create docker networks if they don't exist
-                        sh '''
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
-                                docker network ls | grep redis-network || docker network create redis-network
-                                docker network ls | grep monitoring-network || docker network create monitoring-network
-                            "
-                        '''
+                        // Fix 7: Create docker networks with safer approach
+                        sh """
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} 'docker network ls | grep redis-network || docker network create redis-network'
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} 'docker network ls | grep monitoring-network || docker network create monitoring-network'
+                        """
                     }
                 }
             }
@@ -416,20 +393,13 @@ def deployStandard() {
         def deploymentHost = env.DROPLET_IP
         def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
         
-        // More secure way to use SSH key without string interpolation
-        sh '''
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
-                cd ''' + "${env.DEPLOYMENT_DIR}" + ''' && \
-                cat > .env.deployment << EOF
-APP_IMAGE=''' + "${appImage}" + '''
-DROPLET_IP=''' + "${deploymentHost}" + '''
-EOF
-                export APP_IMAGE=''' + "${appImage}" + ''' && \
-                export DROPLET_IP=''' + "${deploymentHost}" + ''' && \
-                docker-compose pull app && \
-                docker-compose --profile production up -d app
-            "
-        '''
+        // Fix 8: Create a more structured deployment step for standard deployments
+        sh """
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && echo 'APP_IMAGE=${appImage}' > .env.deployment"
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && echo 'DROPLET_IP=${deploymentHost}' >> .env.deployment"
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && export APP_IMAGE='${appImage}' && export DROPLET_IP='${deploymentHost}' && docker-compose pull app"
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && export APP_IMAGE='${appImage}' && export DROPLET_IP='${deploymentHost}' && docker-compose --profile production up -d app"
+        """
     }
 }
 
@@ -440,23 +410,22 @@ def deployCanary() {
         def canaryWeight = params.CANARY_WEIGHT
         def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
         
-        // More secure way to use SSH key without string interpolation
-        sh '''
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
-                cd ''' + "${env.DEPLOYMENT_DIR}" + ''' && \
-                cat > .env.deployment << EOF
-CANARY_IMAGE=''' + "${canaryImage}" + '''
-CANARY_WEIGHT=''' + "${canaryWeight}" + '''
-APP_IMAGE=''' + "${appImage}" + '''
-DROPLET_IP=''' + "${deploymentHost}" + '''
-EOF
-                export CANARY_IMAGE=''' + "${canaryImage}" + ''' && \
-                export CANARY_WEIGHT=''' + "${canaryWeight}" + ''' && \
-                export APP_IMAGE=''' + "${appImage}" + ''' && \
-                export DROPLET_IP=''' + "${deploymentHost}" + ''' && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml --profile production up -d canary traefik
-            "
-        '''
+        // Fix 9: Create a better structured canary deployment
+        sh """
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
+                echo 'CANARY_IMAGE=${canaryImage}';
+                echo 'CANARY_WEIGHT=${canaryWeight}';
+                echo 'APP_IMAGE=${appImage}';
+                echo 'DROPLET_IP=${deploymentHost}';
+            } > .env.deployment"
+            
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
+                export CANARY_IMAGE='${canaryImage}' && \
+                export CANARY_WEIGHT='${canaryWeight}' && \
+                export APP_IMAGE='${appImage}' && \
+                export DROPLET_IP='${deploymentHost}' && \
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml --profile production up -d canary traefik"
+        """
     }
 }
 
@@ -465,26 +434,25 @@ def promoteCanary() {
         def deploymentHost = env.DROPLET_IP
         def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
         
-        // More secure way to use SSH key without string interpolation
-        sh '''
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
-                cd ''' + "${env.DEPLOYMENT_DIR}" + ''' && \
-                cat > .env.deployment << EOF
-APP_IMAGE=''' + "${canaryImage}" + '''
-DROPLET_IP=''' + "${deploymentHost}" + '''
-CANARY_IMAGE=''' + "${canaryImage}" + '''
-CANARY_WEIGHT=''' + "${params.CANARY_WEIGHT}" + '''
-EOF
-                export APP_IMAGE=''' + "${canaryImage}" + ''' && \
-                export DROPLET_IP=''' + "${deploymentHost}" + ''' && \
-                export CANARY_IMAGE=''' + "${canaryImage}" + ''' && \
-                export CANARY_WEIGHT=''' + "${params.CANARY_WEIGHT}" + ''' && \
+        // Fix 10: Better structured canary promotion
+        sh """
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
+                echo 'APP_IMAGE=${canaryImage}';
+                echo 'DROPLET_IP=${deploymentHost}';
+                echo 'CANARY_IMAGE=${canaryImage}';
+                echo 'CANARY_WEIGHT=${params.CANARY_WEIGHT}';
+            } > .env.deployment"
+            
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
+                export APP_IMAGE='${canaryImage}' && \
+                export DROPLET_IP='${deploymentHost}' && \
+                export CANARY_IMAGE='${canaryImage}' && \
+                export CANARY_WEIGHT='${params.CANARY_WEIGHT}' && \
                 docker-compose pull app && \
                 docker-compose --profile production up -d app && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary
-            "
-        '''
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary"
+        """
     }
 }
 
@@ -494,18 +462,16 @@ def rollbackCanary() {
         def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
         def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
         
-        // More secure way to use SSH key without string interpolation
-        sh '''
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
-                cd ''' + "${env.DEPLOYMENT_DIR}" + ''' && \
-                export CANARY_IMAGE=''' + "${canaryImage}" + ''' && \
-                export CANARY_WEIGHT=''' + "${params.CANARY_WEIGHT}" + ''' && \
-                export APP_IMAGE=''' + "${appImage}" + ''' && \
-                export DROPLET_IP=''' + "${deploymentHost}" + ''' && \
+        // Fix 11: Improved canary rollback process
+        sh """
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
+                export CANARY_IMAGE='${canaryImage}' && \
+                export CANARY_WEIGHT='${params.CANARY_WEIGHT}' && \
+                export APP_IMAGE='${appImage}' && \
+                export DROPLET_IP='${deploymentHost}' && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary || true && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true
-            "
-        '''
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true"
+        """
     }
 }
 
@@ -514,19 +480,18 @@ def deployRollback() {
         def deploymentHost = env.DROPLET_IP
         def rollbackImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${params.ROLLBACK_VERSION}"
         
-        // More secure way to use SSH key without string interpolation
-        sh '''
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
-                cd ''' + "${env.DEPLOYMENT_DIR}" + ''' && \
-                cat > .env.deployment << EOF
-APP_IMAGE=''' + "${rollbackImage}" + '''
-DROPLET_IP=''' + "${deploymentHost}" + '''
-EOF
-                export APP_IMAGE=''' + "${rollbackImage}" + ''' && \
-                export DROPLET_IP=''' + "${deploymentHost}" + ''' && \
+        // Fix 12: Better structured rollback deployment
+        sh """
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
+                echo 'APP_IMAGE=${rollbackImage}';
+                echo 'DROPLET_IP=${deploymentHost}';
+            } > .env.deployment"
+            
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
+                export APP_IMAGE='${rollbackImage}' && \
+                export DROPLET_IP='${deploymentHost}' && \
                 docker-compose pull app && \
-                docker-compose --profile production up -d app
-            "
-        '''
+                docker-compose --profile production up -d app"
+        """
     }
 }
