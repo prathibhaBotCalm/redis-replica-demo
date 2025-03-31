@@ -1,6 +1,12 @@
 pipeline {
     agent any
     
+    options {
+        timeout(time: 2, unit: 'HOURS') // Global timeout for the entire pipeline
+        disableConcurrentBuilds() // Prevent multiple builds running simultaneously
+        buildDiscarder(logRotator(numToKeepStr: '10')) // Keep only last 10 builds
+    }
+    
     environment {
         DOCKER_REGISTRY = "prathibhabotcalm" // Your Docker Hub username
         APP_IMAGE_NAME = "nextjs-app"
@@ -14,6 +20,8 @@ pipeline {
         DEPLOYMENT_DIR = "/opt/app" // Deployment directory
         DEPLOY_ENV = "${params.ENVIRONMENT ?: 'auto'}" // Will be overridden if auto-detected
         DEPLOY_TYPE = "${params.DEPLOYMENT_TYPE ?: 'canary'}" // Default deployment type
+        HEALTH_CHECK_MAX_ATTEMPTS = 15 // Increased from 10
+        HEALTH_CHECK_INTERVAL = 10 // Seconds between checks
     }
     
     parameters {
@@ -26,144 +34,81 @@ pipeline {
     }
     
     triggers {
-        // Poll SCM every minute for changes
-        pollSCM('* * * * *')
-        
-        // GitHub webhook trigger (requires GitHub plugin)
+        pollSCM('H/5 * * * *') // Poll SCM every 5 minutes instead of every minute
         githubPush()
     }
     
     stages {
-
-        stage('Initialize Environment Variables') {
+        stage('Initialize') {
             steps {
                 script {
-                    // Determine if this is a triggered build from GitHub
-                    def isTriggerFromGitHub = false
-                    try {
-                        def causes = currentBuild.getBuildCauses()
-                        causes.each { cause ->
-                            echo "Build cause: ${cause}"
-                            if (cause.toString().contains('github') || 
-                                cause.toString().contains('GitHub') ||
-                                cause.toString().contains('GitHubPushCause') || 
-                                cause.toString().contains('SCMTriggerCause') || 
-                                cause.toString().contains('Remote')) {
-                                isTriggerFromGitHub = true
-                                echo "Detected automatic GitHub trigger"
-                            }
-                        }
-                        
-                        // Additional detection methods
-                        if (!isTriggerFromGitHub && (env.CHANGE_ID != null || env.GIT_COMMIT != null)) {
-                            echo "Detected GitHub trigger via metadata"
-                            isTriggerFromGitHub = true
-                        }
-                    } catch (Exception e) {
-                        echo "Error determining build cause: ${e.getMessage()}"
-                    }
+                    // Clean workspace at the start
+                    cleanWs()
                     
-                    // Different initialization for automatic vs manual builds
-                    if (isTriggerFromGitHub) {
-                        // For automatic GitHub push builds, use default values that are safe
-                        echo "Automatic build detected - setting default safe values"
-                        
-                        // Get branch name with improved detection
-                        def branch = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceAll('origin/', '')
-                        
-                        if (branch == null || branch.trim() == '') {
-                            try {
-                                def gitOutput = sh(script: "git branch --contains HEAD | grep '*' | cut -d' ' -f2", returnStdout: true).trim()
-                                branch = gitOutput ?: 'unknown'
-                            } catch (Exception e) {
-                                branch = 'unknown'
-                            }
-                        }
-                        
-                        echo "Detected branch: ${branch}"
-                        
-                        // Safer defaults based on the branch
-                        if (branch == 'main' || branch == 'master') {
-                            env.DEPLOY_ENV = 'prod'
-                            env.DEPLOY_TYPE = 'canary'  // Always use canary for automatic main branch builds
-                            env.CANARY_WEIGHT = '20'    // Default to 20% traffic
-                        } else if (branch == 'staging') {
-                            env.DEPLOY_ENV = 'staging'
-                            env.DEPLOY_TYPE = 'standard'
-                        } else {
-                            env.DEPLOY_ENV = 'dev'
-                            env.DEPLOY_TYPE = 'standard'
-                        }
-                    } else {
-                        // For manual builds, use the parameters from the UI
-                        env.DEPLOY_ENV = params.ENVIRONMENT
-                        env.DEPLOY_TYPE = params.DEPLOYMENT_TYPE
-                        env.CANARY_WEIGHT = params.CANARY_WEIGHT
-                    }
-                    
-                    echo "Initial environment setting: ${env.DEPLOY_ENV}"
-                    echo "Initial deployment type: ${env.DEPLOY_TYPE}"
+                    // Initialize build status
+                    env.BUILD_STATUS = "IN_PROGRESS"
+                    currentBuild.displayName = "#${BUILD_NUMBER} - ${env.DEPLOY_ENV} (${env.DEPLOY_TYPE})"
                 }
             }
         }
 
-        stage('Finalize Environment Settings') {
+        stage('Checkout') {
+            steps {
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/main']], // Default branch
+                    extensions: [
+                        [$class: 'CloneOption', depth: 1, shallow: true], // Shallow clone
+                        [$class: 'CleanCheckout'], // Clean workspace before checkout
+                        [$class: 'LocalBranch', localBranch: '**'] // Checkout as local branch
+                    ],
+                    userRemoteConfigs: [[url: 'https://github.com/your-repo/your-project.git']]
+                ])
+                
+                script {
+                    // Get proper git commit information
+                    env.GIT_COMMIT = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
+                    env.GIT_COMMIT_SHORT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    env.GIT_BRANCH = env.BRANCH_NAME ?: sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()
+                    
+                    // Update display name with git info
+                    currentBuild.displayName = "#${BUILD_NUMBER} - ${env.GIT_BRANCH}@${env.GIT_COMMIT_SHORT}"
+                }
+            }
+        }
+
+        stage('Determine Environment') {
             steps {
                 script {
-                    // Print diagnostic information about environment variables
-                    echo "Branch name: ${env.BRANCH_NAME}"
-                    echo "GIT_BRANCH: ${env.GIT_BRANCH}"
+                    // Improved environment detection logic
+                    def branch = env.GIT_BRANCH.toLowerCase()
                     
-                    // Get branch name with improved detection
-                    def branch = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceAll('origin/', '')
-                    
-                    if (branch == null || branch.trim() == '') {
-                        echo "WARNING: Branch name is empty or null, trying alternate methods"
-                        try {
-                            def gitOutput = sh(script: "git branch --contains HEAD | grep '*' | cut -d' ' -f2", returnStdout: true).trim()
-                            branch = gitOutput ?: 'unknown'
-                            echo "Determined branch using git command: ${branch}"
-                        } catch (Exception e) {
-                            echo "Failed to get branch name: ${e.getMessage()}"
-                            branch = 'dev' // Default to dev if we can't determine
-                            echo "Defaulting to branch: ${branch}"
-                        }
-                    }
-                    
-                    echo "Resolved branch name: ${branch}"
-                    
-                    // Set environment based on branch if auto-detect is enabled and not already set
-                    if (env.DEPLOY_ENV == 'auto') {
-                        // More robust branch determination logic
-                        if (branch == 'main' || branch == 'master') {
+                    if (params.ENVIRONMENT == 'auto') {
+                        if (branch.contains('main') || branch.contains('master')) {
                             env.DEPLOY_ENV = 'prod'
-                        } else if (branch == 'staging') {
+                            env.DEPLOY_TYPE = 'canary' // Force canary for production
+                        } else if (branch.contains('staging') || branch.contains('release')) {
                             env.DEPLOY_ENV = 'staging'
+                            env.DEPLOY_TYPE = 'standard'
                         } else {
                             env.DEPLOY_ENV = 'dev'
+                            env.DEPLOY_TYPE = 'standard'
                         }
-                    }
-                    
-                    echo "Deploying to environment: ${env.DEPLOY_ENV}"
-                    
-                    // Final deployment type validation - ensure main branch always uses canary deployment
-                    if ((branch == 'main' || branch == 'master') && env.DEPLOY_ENV == 'prod') {
-                        // Force canary deployment for production main branch regardless of what's been set
-                        // This is a safety mechanism
-                        env.DEPLOY_TYPE = 'canary'
-                        echo "IMPORTANT: Production main branch deployment detected - OVERRIDING to canary deployment for safety"
-                    }
-                    
-                    echo "Final deployment type: ${env.DEPLOY_TYPE}"
-                    
-                    // Store a separate value for the credential ID determination
-                    if (env.DEPLOY_ENV == 'auto') {
-                        env.CRED_ENV = 'prod'  // Use prod-env-file when auto is detected
-                        echo "Using credential ID: ${env.CRED_ENV}-env-file for auto environment"
                     } else {
-                        env.CRED_ENV = env.DEPLOY_ENV
-                        echo "Using credential ID: ${env.CRED_ENV}-env-file"
+                        env.DEPLOY_ENV = params.ENVIRONMENT
                     }
+                    
+                    // Safety override for production
+                    if (env.DEPLOY_ENV == 'prod') {
+                        env.DEPLOY_TYPE = 'canary' // Always use canary for production
+                    }
+                    
+                    // Update build display name with environment info
+                    currentBuild.displayName = "#${BUILD_NUMBER} - ${env.DEPLOY_ENV} (${env.DEPLOY_TYPE})"
+                    
+                    echo "Deploying to: ${env.DEPLOY_ENV}"
+                    echo "Deployment type: ${env.DEPLOY_TYPE}"
+                    echo "Branch: ${env.GIT_BRANCH}"
                 }
             }
         }
@@ -171,8 +116,14 @@ pipeline {
         stage('Validate Parameters') {
             steps {
                 script {
-                    if (env.DEPLOY_TYPE == 'rollback' && params.ROLLBACK_VERSION == '') {
-                        error "Rollback version is required for rollback deployment type"
+                    if (env.DEPLOY_TYPE == 'rollback') {
+                        if (!params.ROLLBACK_VERSION?.trim()) {
+                            error "Rollback version is required for rollback deployment type"
+                        }
+                        // Validate rollback version format
+                        if (!(params.ROLLBACK_VERSION ==~ /^[a-f0-9]{7}-\d+$/)) {
+                            error "Invalid rollback version format. Expected format: commit-hash-buildnumber"
+                        }
                     }
                     
                     if (env.DEPLOY_TYPE == 'canary') {
@@ -181,13 +132,15 @@ pipeline {
                             error "Canary weight must be between 1 and 99"
                         }
                     }
+                    
+                    // Validate Redis parameters
+                    try {
+                        Integer.parseInt(params.REDIS_MAX_ATTEMPTS)
+                        Integer.parseInt(params.REDIS_SLEEP_DURATION)
+                    } catch (NumberFormatException e) {
+                        error "Redis parameters must be valid integers"
+                    }
                 }
-            }
-        }
-        
-        stage('Checkout') {
-            steps {
-                checkout scm
             }
         }
         
@@ -198,17 +151,60 @@ pipeline {
             steps {
                 script {
                     try {
-                        sh "docker build -t ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG} ."
-                        
-                        if (env.DEPLOY_TYPE == 'canary') {
-                            sh "docker tag ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG} ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
+                        // Use BuildKit for better build performance and caching
+                        withEnv(['DOCKER_BUILDKIT=1']) {
+                            sh """
+                                docker build \
+                                    --build-arg BUILD_NUMBER=${env.BUILD_NUMBER} \
+                                    --build-arg GIT_COMMIT=${env.GIT_COMMIT} \
+                                    -t ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG} \
+                                    --target production \
+                                    .
+                            """
+                            
+                            if (env.DEPLOY_TYPE == 'canary') {
+                                sh "docker tag ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG} ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
+                            }
                         }
                     } catch (Exception e) {
-                        echo "Error building Docker image: ${e.getMessage()}"
-                        echo "Checking if Docker is installed..."
-                        sh "which docker || echo 'Docker not found'"
-                        sh "id | grep docker || echo 'User not in docker group'"
-                        throw e
+                        echo "Docker build failed. Checking environment..."
+                        sh "docker --version || echo 'Docker not installed'"
+                        sh "docker info || echo 'Docker not running'"
+                        sh "groups | grep docker || echo 'User not in docker group'"
+                        error "Docker build failed: ${e.getMessage()}"
+                    }
+                }
+            }
+            
+            post {
+                success {
+                    script {
+                        // Store image metadata
+                        env.BUILT_IMAGE = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
+                        echo "Successfully built image: ${env.BUILT_IMAGE}"
+                    }
+                }
+            }
+        }
+        
+        stage('Scan Docker Image') {
+            when {
+                expression { env.DEPLOY_TYPE != 'rollback' && env.DEPLOY_ENV == 'prod' }
+            }
+            steps {
+                script {
+                    // Use Trivy or other scanning tools to check for vulnerabilities
+                    try {
+                        sh """
+                            docker run --rm \
+                                -v /var/run/docker.sock:/var/run/docker.sock \
+                                aquasec/trivy image \
+                                --severity HIGH,CRITICAL \
+                                --exit-code 1 \
+                                ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}
+                        """
+                    } catch (Exception e) {
+                        error "Image scanning found critical vulnerabilities. Deployment aborted."
                     }
                 }
             }
@@ -219,274 +215,131 @@ pipeline {
                 expression { env.DEPLOY_TYPE != 'rollback' }
             }
             steps {
-                withCredentials([usernamePassword(credentialsId: 'docker-registry-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASSWORD')]) {
-                    sh "echo ${DOCKER_PASSWORD} | docker login -u ${DOCKER_USER} --password-stdin"
-                    sh "docker push ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
-                    
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-registry-credentials', 
+                    usernameVariable: 'DOCKER_USER', 
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )]) {
                     script {
-                        if (env.DEPLOY_TYPE == 'canary') {
-                            sh "docker push ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
-                        }
-                    }
-                }
-            }
-        }
-        
-        stage('Update Config Files') {
-            steps {
-                script {
-                    def envFile = '.env'
-                    def composeFile = 'docker-compose.yml'
-                    
-                    // Create environment-specific .env file
-                    if (env.DEPLOY_ENV == 'dev') {
-                        sh "sed -i 's/IS_DEV=false/IS_DEV=true/g' ${envFile}"
-                        sh "sed -i 's/REDIS_SENTINELS_PROD/REDIS_SENTINELS_DEV/g' ${composeFile}"
-                        sh "sed -i 's/REDIS_HOST_PROD/REDIS_HOST_DEV/g' ${composeFile}"
-                    }
-                    
-                    // Update canary deployment settings if needed
-                    if (env.DEPLOY_TYPE == 'canary') {
-                        sh "sed -i 's/CANARY_WEIGHT=.*/CANARY_WEIGHT=${params.CANARY_WEIGHT}/g' ${envFile}"
-                    }
-                    
-                    // Update Traefik configuration to use IP instead of domain name
-                    if (fileExists('traefik/traefik.yml')) {
-                        sh "sed -i 's/your-domain.com/${DROPLET_IP}/g' traefik/traefik.yml"
-                    }
-                    
-                    // Update docker-compose.canary.yml to use IP instead of domain name
-                    if (fileExists('docker-compose.canary.yml')) {
-                        sh "sed -i 's/your-domain.com/${DROPLET_IP}/g' docker-compose.canary.yml"
-                    }
-                }
-            }
-        }
-        
-        stage('Prepare Deployment Target') {
-            steps {
-                script {
-                    // Print diagnostic information about credentials
-                    echo "Current environment: ${env.DEPLOY_ENV}"
-                    echo "Deployment type: ${env.DEPLOY_TYPE}"
-                    echo "Credential environment: ${env.CRED_ENV}"
-                    echo "Credentials ID to look for: ${env.CRED_ENV}-env-file"
-                }
-                
-                withCredentials([
-                    sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
-                    file(credentialsId: "${env.CRED_ENV}-env-file", variable: 'ENV_FILE')
-                ]) {
-                    script {
-                        // Create deployment directory structure
-                        sh """
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}"
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/traefik"
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/scripts"
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/backup"
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/config/rclone"
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/grafana/dashboards"
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/grafana/datasources"
-                        """
-                        
-                        // Copy the environment file with robust error handling
                         try {
-                            // Check if ENV_FILE exists
-                            sh "ls -la \"${ENV_FILE}\" || echo 'WARNING: ENV_FILE not found!'"
+                            sh "echo ${DOCKER_PASSWORD} | docker login -u ${DOCKER_USER} --password-stdin"
                             
-                            // Create a default .env file if the credential doesn't exist
-                            sh """
-                                if [ ! -s "${ENV_FILE}" ]; then
-                                    echo "Creating default .env file since '${env.CRED_ENV}-env-file' credential is missing"
-                                    echo "DEPLOY_ENV=${env.DEPLOY_ENV}" > default.env
-                                    echo "APP_VERSION=${env.APP_VERSION}" >> default.env
-                                    echo "DROPLET_IP=${DROPLET_IP}" >> default.env
-                                    scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no default.env ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env
-                                else
-                                    scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no "${ENV_FILE}" ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env
-                                fi
-                            """
-                        } catch (Exception e) {
-                            echo "Error handling env file: ${e.getMessage()}"
-                            sh """
-                                echo "Using .env file from repository instead"
-                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no .env ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env
-                            """
-                        }
-                        
-                        // Add DROPLET_IP to env file
-                        sh """
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "grep -q 'DROPLET_IP=' ${DEPLOYMENT_DIR}/.env || echo 'DROPLET_IP=${DROPLET_IP}' >> ${DEPLOYMENT_DIR}/.env"
-                        """
-                        
-                        // Copy configuration files from repository
-                        sh """
-                            # Copy docker-compose files
-                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no docker-compose*.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/
-
-                            # Copy db dump
-                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no backup/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/backup/ || true
+                            // Retry push operation in case of network issues
+                            retry(3) {
+                                sh "docker push ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
+                            }
                             
-                            # Copy Traefik configuration
-                            if [ -d "traefik" ]; then
-                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no traefik/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/traefik/
-                            fi
-                            
-                            # Copy scripts
-                            if [ -d "scripts" ]; then
-                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no scripts/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/scripts/
-                                ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "chmod +x ${DEPLOYMENT_DIR}/scripts/*.sh"
-                            fi
-                            
-                            # Copy Prometheus configuration if it exists
-                            if [ -f "prometheus.yml" ]; then
-                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no prometheus.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/
-                            fi
-                            
-                            # Copy Grafana configuration if it exists
-                            if [ -d "grafana" ]; then
-                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no grafana/datasources/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/grafana/datasources/ || true
-                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no grafana/dashboards/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/grafana/dashboards/ || true
-                            fi
-                            
-                            # Copy rclone configuration if it exists
-                            if [ -d "config/rclone" ]; then
-                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no config/rclone/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/config/rclone/
-                            fi
-                        """
-                        
-                        // Create docker networks with safer approach
-                        sh """
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} 'docker network ls | grep redis-network || docker network create redis-network'
-                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} 'docker network ls | grep monitoring-network || docker network create monitoring-network'
-                        """
-                    }
-                }
-            }
-        }
-        
-        stage('Deploy Application') {
-            steps {
-                script {
-                    if (env.DEPLOY_TYPE == 'rollback') {
-                        deployRollback()
-                    } else if (env.DEPLOY_TYPE == 'canary') {
-                        deployCanary()
-                    } else {
-                        deployStandard()
-                    }
-                }
-            }
-        }
-        
-        stage('Health Check') {
-            steps {
-                script {
-                    def healthCheckPort = 3000
-                    def healthCheckPath = "/api/health"
-                    def healthCheckUrl = "http://${DROPLET_IP}:${healthCheckPort}${healthCheckPath}"
-                    
-                    echo "Checking health at: ${healthCheckUrl}"
-                    
-                    def healthCheckAttempts = 0
-                    def maxAttempts = 10
-                    def healthCheckSuccess = false
-                    
-                    while (!healthCheckSuccess && healthCheckAttempts < maxAttempts) {
-                        try {
-                            def response = sh(script: "curl -s -o /dev/null -w '%{http_code}' ${healthCheckUrl}", returnStdout: true).trim()
-                            if (response == "200") {
-                                echo "Health check succeeded"
-                                healthCheckSuccess = true
-                            } else {
-                                echo "Health check failed with response: ${response}, retrying..."
-                                healthCheckAttempts++
-                                sleep 15 // Wait 15 seconds before next attempt
+                            if (env.DEPLOY_TYPE == 'canary') {
+                                retry(3) {
+                                    sh "docker push ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
+                                }
                             }
                         } catch (Exception e) {
-                            echo "Health check failed with exception: ${e.getMessage()}, retrying..."
-                            healthCheckAttempts++
-                            sleep 15
+                            error "Failed to push Docker images: ${e.getMessage()}"
                         }
-                    }
-                    
-                    if (!healthCheckSuccess) {
-                        error "Health check failed after ${maxAttempts} attempts"
                     }
                 }
             }
         }
         
-
-        stage('Promote Canary') {
-            when {
-                // Fixed condition: Use a simple string comparison rather than expression
-                expression { return env.DEPLOY_TYPE == 'canary' }
-            }
+        stage('Prepare Deployment') {
             steps {
                 script {
-                    echo "Entered the Promote Canary stage"
-                    // For automatic builds, we can optionally set a timeout and then auto-promote
-                    // if no issues are detected during the canary phase
-                    def isTriggerFromGitHub = false
-                    echo "Checking if build was triggered from GitHub..."
+                    // Create a deployment manifest file
+                    def deploymentManifest = [
+                        "build_number": env.BUILD_NUMBER,
+                        "git_commit": env.GIT_COMMIT,
+                        "git_branch": env.GIT_BRANCH,
+                        "deploy_env": env.DEPLOY_ENV,
+                        "deploy_type": env.DEPLOY_TYPE,
+                        "image_tag": env.PROD_TAG,
+                        "timestamp": new Date().format("yyyy-MM-dd'T'HH:mm:ssZ"),
+                        "initiated_by": currentBuild.getBuildCauses()[0].shortDescription
+                    ]
+                    
+                    writeJSON file: 'deployment-manifest.json', json: deploymentManifest
+                    
+                    // Update configuration files
+                    updateConfigFiles()
+                }
+            }
+        }
+        
+        stage('Deploy to ${DEPLOY_ENV}') {
+            steps {
+                script {
+                    // Record deployment start time
+                    env.DEPLOY_START_TIME = new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+                    
                     try {
-                        def causes = currentBuild.getBuildCauses()
-                        causes.each { cause ->
-                            echo "Promote stage - Build cause: ${cause}"
-                            if (cause.toString().contains('github') || 
-                                cause.toString().contains('GitHub') ||
-                                cause.toString().contains('GitHubPushCause') || 
-                                cause.toString().contains('SCMTriggerCause') || 
-                                cause.toString().contains('Remote')) {
-                                isTriggerFromGitHub = true
-                                echo "Detected GitHub trigger in promote stage"
-                            }
-                        }
-                        
-                        // Also check for branch and git commit presence as trigger indicators
-                        if (!isTriggerFromGitHub && (env.GIT_COMMIT != null || env.BRANCH_NAME != null)) {
-                            echo "Assuming GitHub trigger based on Git metadata being present"
-                            isTriggerFromGitHub = true
+                        switch(env.DEPLOY_TYPE) {
+                            case 'rollback':
+                                deployRollback()
+                                break
+                            case 'canary':
+                                deployCanary()
+                                break
+                            default:
+                                deployStandard()
                         }
                     } catch (Exception e) {
-                        echo "Error determining build cause: ${e.getMessage()}"
+                        error "Deployment failed: ${e.getMessage()}"
                     }
+                }
+            }
+        }
+        
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    // Health check with retries
+                    healthCheck()
                     
-                    def canaryWeight = env.CANARY_WEIGHT ?: params.CANARY_WEIGHT ?: "20"
-                    echo "Current canary weight: ${canaryWeight}%"
+                    // Smoke tests
+                    runSmokeTests()
                     
-                    if (isTriggerFromGitHub) {
-                        echo "Automated deployment from GitHub push. Monitoring canary for issues..."
+                    // Performance check
+                    if (env.DEPLOY_ENV == 'prod') {
+                        runPerformanceChecks()
+                    }
+                }
+            }
+        }
+        
+        stage('Promote Canary') {
+            when {
+                allOf {
+                    expression { env.DEPLOY_TYPE == 'canary' }
+                    expression { env.DEPLOY_ENV == 'prod' }
+                }
+            }
+            steps {
+                script {
+                    if (isAutomatedBuild()) {
+                        // For automated builds, monitor before promoting
+                        echo "Monitoring canary deployment for 5 minutes before promotion..."
+                        sleep(time: 5, unit: 'MINUTES')
                         
-                        // Sleep for a monitoring period for the canary
-                        def monitoringMinutes = 5
-                        echo "Monitoring canary deployment for ${monitoringMinutes} minutes..."
-                        sleep(time: monitoringMinutes, unit: 'MINUTES')
-                        
-                        // Check for any errors in logs or monitoring
-                        echo "Checking canary health..."
-                        def healthCheckPort = 3000
-                        def healthCheckPath = "/api/health"
-                        def healthCheckUrl = "http://${DROPLET_IP}:${healthCheckPort}${healthCheckPath}"
-                        
-                        try {
-                            def response = sh(script: "curl -s -o /dev/null -w '%{http_code}' ${healthCheckUrl}", returnStdout: true).trim()
-                            def errorCheck = sh(script: "curl -s ${healthCheckUrl} | grep -c 'unhealthy' || true", returnStdout: true).trim()
-                            
-                            if (response == "200" && errorCheck == "0") {
-                                echo "No issues detected in canary. Auto-promoting..."
-                                promoteCanary()
-                            } else {
-                                error "Issues detected in canary deployment (response: ${response}, error check: ${errorCheck}). Rolling back."
-                            }
-                        } catch (Exception e) {
-                            error "Error checking canary health: ${e.getMessage()}. Rolling back."
+                        // Verify canary health before promotion
+                        if (verifyCanaryHealth()) {
+                            promoteCanary()
+                        } else {
+                            error "Canary health check failed. Rolling back..."
                         }
                     } else {
-                        // For manual builds, require human approval
-                        timeout(time: DEPLOY_TIMEOUT, unit: 'SECONDS') {
-                            input message: "Canary deployment is serving ${canaryWeight}% of traffic. Promote to 100%?", ok: 'Promote'
+                        // For manual builds, get approval
+                        timeout(time: env.DEPLOY_TIMEOUT, unit: 'SECONDS') {
+                            input(
+                                message: "Promote canary to 100% traffic?", 
+                                ok: 'Promote',
+                                parameters: [
+                                    string(
+                                        name: 'CONFIRMATION', 
+                                        defaultValue: 'yes', 
+                                        description: 'Type "yes" to confirm promotion'
+                                    )
+                                ]
+                            )
                         }
                         
                         promoteCanary()
@@ -495,218 +348,492 @@ pipeline {
             }
         }
         
-        stage('Cleanup') {
+        stage('Finalize') {
             steps {
                 script {
-                    if (env.DEPLOY_TYPE == 'canary') {
-                        sh "docker rmi ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG} || true"
-                    }
+                    env.BUILD_STATUS = "SUCCESS"
+                    env.DEPLOY_END_TIME = new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
                     
-                    // Clean up old images to save disk space - keep the last 5 builds
-                    sh """
-                        docker images ${DOCKER_REGISTRY}/${APP_IMAGE_NAME} --format '{{.Repository}}:{{.Tag}}' | 
-                        sort -r | 
-                        awk 'NR>5' | 
-                        xargs -r docker rmi || true
-                    """
+                    // Generate deployment report
+                    generateDeploymentReport()
+                    
+                    // Clean up resources
+                    cleanUp()
                 }
-            }
-        }
-        
-        stage('Notify Success') {
-            steps {
-                echo "Successfully deployed to ${env.DEPLOY_ENV} environment using ${env.DEPLOY_TYPE} deployment strategy."
-                
-                // Add notification integrations here if needed
-                // For example, Slack, Email, MS Teams notifications
             }
         }
     }
     
     post {
-        failure {
+        always {
             script {
-                if (env.DEPLOY_TYPE == 'canary') {
-                    echo "Canary deployment failed, rolling back"
-                    rollbackCanary()
-                }
-                
-                // Add failure notifications here
-                echo "Deployment to ${env.DEPLOY_ENV} environment failed!"
+                // Send notifications and clean up regardless of build status
+                // notifyBuildStatus()
+                cleanWs() // Clean workspace at the end
             }
         }
         success {
-            echo "Deployment successful!"
+            echo "Deployment to ${env.DEPLOY_ENV} completed successfully!"
+        }
+        failure {
+            script {
+                env.BUILD_STATUS = "FAILURE"
+                echo "Deployment to ${env.DEPLOY_ENV} failed!"
+                
+                // Rollback if this was a canary deployment
+                if (env.DEPLOY_TYPE == 'canary') {
+                    rollbackCanary()
+                }
+            }
+        }
+        unstable {
+            echo "Deployment to ${env.DEPLOY_ENV} completed with warnings"
         }
     }
 }
 
-// Helper functions for deployment strategies
+// --------------------------
+// Helper Methods
+// --------------------------
+
+def updateConfigFiles() {
+    script {
+        def envFile = '.env'
+        def composeFile = 'docker-compose.yml'
+        
+        // Backup original files
+        sh "cp ${envFile} ${envFile}.bak"
+        sh "cp ${composeFile} ${composeFile}.bak"
+        
+        // Update environment-specific settings
+        if (env.DEPLOY_ENV == 'dev') {
+            sh """
+                sed -i 's/IS_DEV=false/IS_DEV=true/g' ${envFile}
+                sed -i 's/REDIS_SENTINELS_PROD/REDIS_SENTINELS_DEV/g' ${composeFile}
+                sed -i 's/REDIS_HOST_PROD/REDIS_HOST_DEV/g' ${composeFile}
+            """
+        }
+        
+        // Update canary settings
+        if (env.DEPLOY_TYPE == 'canary') {
+            sh "sed -i 's/CANARY_WEIGHT=.*/CANARY_WEIGHT=${params.CANARY_WEIGHT}/g' ${envFile}"
+        }
+        
+        // Update domain/IP settings
+        def configFiles = ['traefik/traefik.yml', 'docker-compose.canary.yml']
+        configFiles.each { file ->
+            if (fileExists(file)) {
+                sh "sed -i 's/your-domain.com/${env.DROPLET_IP}/g' ${file}"
+            }
+        }
+    }
+}
+
+def healthCheck() {
+    script {
+        def healthCheckUrl = "http://${env.DROPLET_IP}:3000/api/health"
+        def attempts = 0
+        def success = false
+        
+        echo "Starting health checks for ${healthCheckUrl}"
+        
+        while (!success && attempts < env.HEALTH_CHECK_MAX_ATTEMPTS.toInteger()) {
+            attempts++
+            try {
+                def response = sh(
+                    script: "curl -s -o /dev/null -w '%{http_code}' ${healthCheckUrl}", 
+                    returnStdout: true
+                ).trim()
+                
+                if (response == "200") {
+                    echo "Health check succeeded (attempt ${attempts})"
+                    success = true
+                } else {
+                    echo "Health check failed with HTTP ${response} (attempt ${attempts})"
+                    sleep(time: env.HEALTH_CHECK_INTERVAL.toInteger(), unit: 'SECONDS')
+                }
+            } catch (Exception e) {
+                echo "Health check failed with exception: ${e.getMessage()}"
+                sleep(time: env.HEALTH_CHECK_INTERVAL.toInteger(), unit: 'SECONDS')
+            }
+        }
+        
+        if (!success) {
+            error "Health check failed after ${attempts} attempts"
+        }
+    }
+}
+
+def runSmokeTests() {
+    script {
+        def smokeTestUrl = "http://${env.DROPLET_IP}:3000/api/smoke"
+        try {
+            def response = sh(
+                script: "curl -s -o /dev/null -w '%{http_code}' -X POST ${smokeTestUrl}", 
+                returnStdout: true
+            ).trim()
+            
+            if (response != "200") {
+                error "Smoke test failed with HTTP ${response}"
+            }
+        } catch (Exception e) {
+            error "Smoke test failed: ${e.getMessage()}"
+        }
+    }
+}
+
+def runPerformanceChecks() {
+    script {
+        if (env.DEPLOY_ENV == 'prod') {
+            echo "Running performance checks..."
+            try {
+                sh """
+                    docker run --rm \
+                        -e URL=http://${env.DROPLET_IP}:3000 \
+                        -e DURATION=30s \
+                        --network host \
+                        loadimpact/k6 run - < scripts/performance-test.js
+                """
+            } catch (Exception e) {
+                error "Performance check failed: ${e.getMessage()}"
+            }
+        }
+    }
+}
+
+def isAutomatedBuild() {
+    script {
+        try {
+            def causes = currentBuild.getBuildCauses()
+            return causes.any { cause ->
+                cause.toString().contains('github') || 
+                cause.toString().contains('GitHub') ||
+                cause.toString().contains('GitHubPushCause') || 
+                cause.toString().contains('SCMTriggerCause') || 
+                cause.toString().contains('Remote')
+            }
+        } catch (Exception e) {
+            echo "Error determining build cause: ${e.getMessage()}"
+            return false
+        }
+    }
+}
+
+def verifyCanaryHealth() {
+    script {
+        def canaryHealthUrl = "http://${env.DROPLET_IP}:3000/api/canary-health"
+        try {
+            def response = sh(
+                script: "curl -s -o /dev/null -w '%{http_code}' ${canaryHealthUrl}", 
+                returnStdout: true
+            ).trim()
+            
+            if (response != "200") {
+                return false
+            }
+            
+            // Check error rates from monitoring
+            def errorRate = sh(
+                script: "curl -s http://${env.DROPLET_IP}:9090/api/v1/query?query=rate(http_requests_total{status=~'5..'}[1m]) | jq '.data.result[0].value[1]'", 
+                returnStdout: true
+            ).trim()
+            
+            return errorRate.toFloat() < 0.01 // Less than 1% error rate
+        } catch (Exception e) {
+            echo "Canary health check failed: ${e.getMessage()}"
+            return false
+        }
+    }
+}
+
+def generateDeploymentReport() {
+    script {
+        def report = """
+            Deployment Report
+            ================
+            Environment: ${env.DEPLOY_ENV}
+            Deployment Type: ${env.DEPLOY_TYPE}
+            Build Number: ${env.BUILD_NUMBER}
+            Git Commit: ${env.GIT_COMMIT_SHORT}
+            Branch: ${env.GIT_BRANCH}
+            Start Time: ${env.DEPLOY_START_TIME}
+            End Time: ${env.DEPLOY_END_TIME}
+            Duration: ${currentBuild.durationString}
+            Status: ${env.BUILD_STATUS}
+            
+            Docker Images:
+            - Production: ${env.DOCKER_REGISTRY}/${env.APP_IMAGE_NAME}:${env.PROD_TAG}
+            ${env.DEPLOY_TYPE == 'canary' ? "- Canary: ${env.DOCKER_REGISTRY}/${env.APP_IMAGE_NAME}:${env.CANARY_TAG}" : ""}
+        """
+        
+        writeFile file: 'deployment-report.txt', text: report
+        archiveArtifacts artifacts: 'deployment-report.txt,deployment-manifest.json'
+    }
+}
+
+def cleanUp() {
+    script {
+        // Clean up Docker images
+        sh """
+            docker images --filter "reference=${env.DOCKER_REGISTRY}/${env.APP_IMAGE_NAME}" --format "{{.Repository}}:{{.Tag}}" | \
+            sort -r | \
+            awk 'NR>5' | \
+            xargs -r docker rmi || true
+        """
+        
+        // Clean up dangling images
+        sh "docker image prune -f"
+    }
+}
+
+// def notifyBuildStatus() {
+//     script {
+//         def subject = "[${env.BUILD_STATUS}] Deployment to ${env.DEPLOY_ENV} - Build #${env.BUILD_NUMBER}"
+//         def body = """
+//             Deployment ${env.BUILD_STATUS.toLowerCase()} for ${env.GIT_BRANCH}@${env.GIT_COMMIT_SHORT}
+//             Environment: ${env.DEPLOY_ENV}
+//             Type: ${env.DEPLOY_TYPE}
+//             Build: ${env.BUILD_NUMBER}
+//             Duration: ${currentBuild.durationString}
+//             URL: ${env.BUILD_URL}
+//         """
+        
+//         // Example: Send email notification
+//         emailext (
+//             subject: subject,
+//             body: body,
+//             to: 'team@example.com',
+//             attachLog: env.BUILD_STATUS != 'SUCCESS'
+//         )
+        
+//         // Example: Send Slack notification
+//         slackSend(
+//             color: env.BUILD_STATUS == 'SUCCESS' ? 'good' : 'danger',
+//             message: subject + "\n" + body
+//         )
+//     }
+// }
+
+// --------------------------
+// Deployment Methods
+// --------------------------
+
 def deployStandard() {
-    withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-        def deploymentHost = env.DROPLET_IP
-        def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
-        
-        // Create deployment environment file with necessary variables
-        sh """
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
-                echo 'APP_IMAGE=${appImage}';
-                echo 'DROPLET_IP=${deploymentHost}';
-            } > .env.deployment"
-        """
-        
-        // Deploy the full application stack with production profile
-        sh """
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                export APP_IMAGE='${appImage}' && \
-                export DROPLET_IP='${deploymentHost}' && \
-                docker-compose pull && \
-                docker-compose --profile production up -d"
-        """
+    withCredentials([
+        sshUserPrivateKey(
+            credentialsId: 'ssh-deployment-key', 
+            keyFileVariable: 'SSH_KEY', 
+            usernameVariable: 'SSH_USER'
+        ),
+        file(
+            credentialsId: "${env.DEPLOY_ENV}-env-file", 
+            variable: 'ENV_FILE'
+        )
+    ]) {
+        script {
+            def appImage = "${env.DOCKER_REGISTRY}/${env.APP_IMAGE_NAME}:${env.PROD_TAG}"
+            
+            // Create deployment environment file
+            sh """
+                echo 'APP_IMAGE=${appImage}' > .env.deployment
+                echo 'DROPLET_IP=${env.DROPLET_IP}' >> .env.deployment
+                echo 'DEPLOY_ENV=${env.DEPLOY_ENV}' >> .env.deployment
+                
+                # Copy the environment file to server
+                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no .env.deployment ${SSH_USER}@${env.DROPLET_IP}:${env.DEPLOYMENT_DIR}/.env
+                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no "${ENV_FILE}" ${SSH_USER}@${env.DROPLET_IP}:${env.DEPLOYMENT_DIR}/.env.production
+            """
+            
+            // Deploy the application
+            sh """
+                ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${env.DROPLET_IP} "
+                    cd ${env.DEPLOYMENT_DIR} && \
+                    export APP_IMAGE='${appImage}' && \
+                    export DROPLET_IP='${env.DROPLET_IP}' && \
+                    docker-compose pull && \
+                    docker-compose --profile production up -d --build
+                "
+            """
+        }
     }
 }
 
 def deployCanary() {
-    withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-        def deploymentHost = env.DROPLET_IP
-        def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
-        def canaryWeight = params.CANARY_WEIGHT
-        def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
-        
-        // Set up environment for canary deployment
-        sh """
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
-                echo 'CANARY_IMAGE=${canaryImage}';
-                echo 'CANARY_WEIGHT=${canaryWeight}';
-                echo 'APP_IMAGE=${appImage}';
-                echo 'DROPLET_IP=${deploymentHost}';
-            } > .env.deployment"
+    withCredentials([
+        sshUserPrivateKey(
+            credentialsId: 'ssh-deployment-key', 
+            keyFileVariable: 'SSH_KEY', 
+            usernameVariable: 'SSH_USER'
+        ),
+        file(
+            credentialsId: "${env.DEPLOY_ENV}-env-file", 
+            variable: 'ENV_FILE'
+        )
+    ]) {
+        script {
+            def canaryImage = "${env.DOCKER_REGISTRY}/${env.APP_IMAGE_NAME}:${env.CANARY_TAG}"
+            def appImage = "${env.DOCKER_REGISTRY}/${env.APP_IMAGE_NAME}:${env.PROD_TAG}"
             
-            # First deploy the main infrastructure (Redis, monitoring, etc.)
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                export APP_IMAGE='${appImage}' && \
-                export DROPLET_IP='${deploymentHost}' && \
-                docker-compose pull && \
-                docker-compose up -d redis-master redis-slave-1 redis-slave-2 redis-slave-3 redis-slave-4 \
-                sentinel-1 sentinel-2 sentinel-3 redis-backup \
-                prometheus grafana cadvisor \
-                redis-exporter-master redis-exporter-slave1 redis-exporter-slave2 redis-exporter-slave3 redis-exporter-slave4"
+            // Create deployment environment file
+            sh """
+                echo 'CANARY_IMAGE=${canaryImage}' > .env.deployment
+                echo 'CANARY_WEIGHT=${params.CANARY_WEIGHT}' >> .env.deployment
+                echo 'APP_IMAGE=${appImage}' >> .env.deployment
+                echo 'DROPLET_IP=${env.DROPLET_IP}' >> .env.deployment
+                echo 'DEPLOY_ENV=${env.DEPLOY_ENV}' >> .env.deployment
                 
-            # Wait for Redis infrastructure to be ready
-            echo "Waiting for Redis infrastructure to be ready..."
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                attempt=0; \
-                max_attempts=${params.REDIS_MAX_ATTEMPTS ?: 50}; \
-                sleep_duration=${params.REDIS_SLEEP_DURATION ?: 5}; \
-                until [ \$attempt -ge \$max_attempts ] || docker exec -i \\\$(docker ps -q -f name=redis-master) redis-cli -a \\\${REDIS_PASSWORD} PING | grep -q 'PONG'; do \
-                    attempt=\\\$((attempt+1)); \
-                    echo 'Waiting for Redis to be ready... (\\\$attempt/\\\$max_attempts)'; \
-                    sleep \\\$sleep_duration; \
-                done; \
-                if [ \$attempt -ge \$max_attempts ]; then \
-                    echo 'Redis infrastructure did not become ready in time'; \
-                    exit 1; \
-                fi; \
-                echo 'Redis infrastructure is ready'"
-                
-            # Then deploy both the stable and canary versions of the app
-            echo "Deploying stable and canary applications..."
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                export CANARY_IMAGE='${canaryImage}' && \
-                export CANARY_WEIGHT='${canaryWeight}' && \
-                export APP_IMAGE='${appImage}' && \
-                export DROPLET_IP='${deploymentHost}' && \
-                docker-compose -f docker-compose.yml up -d app && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml up -d canary traefik"
-        """
+                # Copy files to server
+                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no .env.deployment ${SSH_USER}@${env.DROPLET_IP}:${env.DEPLOYMENT_DIR}/.env
+                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no "${ENV_FILE}" ${SSH_USER}@${env.DROPLET_IP}:${env.DEPLOYMENT_DIR}/.env.production
+            """
+            
+            // Deploy Redis infrastructure first
+            sh """
+                ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${env.DROPLET_IP} "
+                    cd ${env.DEPLOYMENT_DIR} && \
+                    docker-compose up -d redis-master redis-slave-1 redis-slave-2 redis-slave-3 redis-slave-4 \
+                        sentinel-1 sentinel-2 sentinel-3 redis-backup \
+                        prometheus grafana cadvisor \
+                        redis-exporter-master redis-exporter-slave1 redis-exporter-slave2 redis-exporter-slave3 redis-exporter-slave4
+                "
+            """
+            
+            // Wait for Redis to be ready
+            sh """
+                ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${env.DROPLET_IP} "
+                    cd ${env.DEPLOYMENT_DIR} && \
+                    attempt=0; \
+                    max_attempts=${params.REDIS_MAX_ATTEMPTS}; \
+                    sleep_duration=${params.REDIS_SLEEP_DURATION}; \
+                    until [ \$attempt -ge \$max_attempts ] || \\
+                          docker exec -i \$(docker ps -q -f name=redis-master) redis-cli -a \${REDIS_PASSWORD} PING | grep -q 'PONG'; do \
+                        attempt=\$((attempt+1)); \
+                        echo 'Waiting for Redis to be ready... (\$attempt/\$max_attempts)'; \
+                        sleep \$sleep_duration; \
+                    done; \
+                    if [ \$attempt -ge \$max_attempts ]; then \
+                        echo 'Redis did not become ready in time'; \
+                        exit 1; \
+                    fi
+                "
+            """
+            
+            // Deploy both stable and canary versions
+            sh """
+                ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${env.DROPLET_IP} "
+                    cd ${env.DEPLOYMENT_DIR} && \
+                    export CANARY_IMAGE='${canaryImage}' && \
+                    export CANARY_WEIGHT='${params.CANARY_WEIGHT}' && \
+                    export APP_IMAGE='${appImage}' && \
+                    export DROPLET_IP='${env.DROPLET_IP}' && \
+                    docker-compose -f docker-compose.yml up -d app && \
+                    docker-compose -f docker-compose.yml -f docker-compose.canary.yml up -d canary traefik
+                "
+            """
+        }
     }
 }
 
 def promoteCanary() {
-    withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-        def deploymentHost = env.DROPLET_IP
-        def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
-        def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
-        
-        // Update the main app to use the canary image (promotion)
-        sh """
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
-                echo 'APP_IMAGE=${canaryImage}';
-                echo 'DROPLET_IP=${deploymentHost}';
-                echo 'DEPLOY_TYPE=standard';
-            } > .env.deployment"
+    withCredentials([
+        sshUserPrivateKey(
+            credentialsId: 'ssh-deployment-key', 
+            keyFileVariable: 'SSH_KEY', 
+            usernameVariable: 'SSH_USER'
+        )
+    ]) {
+        script {
+            def canaryImage = "${env.DOCKER_REGISTRY}/${env.APP_IMAGE_NAME}:${env.CANARY_TAG}"
             
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                export APP_IMAGE='${canaryImage}' && \
-                export DROPLET_IP='${deploymentHost}' && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary || true && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true"
+            // Update the main app to use the canary image
+            sh """
+                ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${env.DROPLET_IP} "
+                    cd ${env.DEPLOYMENT_DIR} && \
+                    echo 'APP_IMAGE=${canaryImage}' > .env.deployment && \
+                    echo 'DROPLET_IP=${env.DROPLET_IP}' >> .env.deployment && \
+                    export APP_IMAGE='${canaryImage}' && \
+                    export DROPLET_IP='${env.DROPLET_IP}' && \
+                    docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary || true && \
+                    docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true && \
+                    docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop traefik || true && \
+                    docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f traefik || true && \
+                    docker-compose --profile production up -d app
+                "
+            """
             
-            # Also stop and remove Traefik if it's running
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop traefik || true && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f traefik || true"
-            
-            # Restart the main app with the canary image
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                export APP_IMAGE='${canaryImage}' && \
-                export DROPLET_IP='${deploymentHost}' && \
-                docker-compose --profile production up -d app"
-                
-            echo "Canary deployment successfully promoted to production"
-        """
+            echo "Canary successfully promoted to production"
+        }
     }
 }
 
 def rollbackCanary() {
-    withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-        def deploymentHost = env.DROPLET_IP
-        def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
-        
-        // Stop and remove the canary service, keeping the original app running
-        sh """
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
-                echo 'APP_IMAGE=${appImage}';
-                echo 'DROPLET_IP=${deploymentHost}';
-            } > .env.deployment"
+    withCredentials([
+        sshUserPrivateKey(
+            credentialsId: 'ssh-deployment-key', 
+            keyFileVariable: 'SSH_KEY', 
+            usernameVariable: 'SSH_USER'
+        )
+    ]) {
+        script {
+            def appImage = "${env.DOCKER_REGISTRY}/${env.APP_IMAGE_NAME}:${env.PROD_TAG}"
             
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                export APP_IMAGE='${appImage}' && \
-                export DROPLET_IP='${deploymentHost}' && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary || true && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true"
+            // Rollback to the stable version
+            sh """
+                ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${env.DROPLET_IP} "
+                    cd ${env.DEPLOYMENT_DIR} && \
+                    echo 'APP_IMAGE=${appImage}' > .env.deployment && \
+                    echo 'DROPLET_IP=${env.DROPLET_IP}' >> .env.deployment && \
+                    export APP_IMAGE='${appImage}' && \
+                    export DROPLET_IP='${env.DROPLET_IP}' && \
+                    docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary || true && \
+                    docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true && \
+                    docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop traefik || true && \
+                    docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f traefik || true && \
+                    docker-compose --profile production up -d app
+                "
+            """
             
-            # Also stop and remove Traefik if it's running
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop traefik || true && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f traefik || true"
-            
-            # Ensure the main app is still running with the stable image
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                export APP_IMAGE='${appImage}' && \
-                export DROPLET_IP='${deploymentHost}' && \
-                docker-compose --profile production up -d app"
-        """
+            echo "Successfully rolled back canary deployment"
+        }
     }
 }
 
 def deployRollback() {
-    withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-        def deploymentHost = env.DROPLET_IP
-        def rollbackImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${params.ROLLBACK_VERSION}"
-        
-        // Rollback by updating the app to the specified version while keeping the rest of the stack running
-        sh """
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
-                echo 'APP_IMAGE=${rollbackImage}';
-                echo 'DROPLET_IP=${deploymentHost}';
-            } > .env.deployment"
+    withCredentials([
+        sshUserPrivateKey(
+            credentialsId: 'ssh-deployment-key', 
+            keyFileVariable: 'SSH_KEY', 
+            usernameVariable: 'SSH_USER'
+        ),
+        file(
+            credentialsId: "${env.DEPLOY_ENV}-env-file", 
+            variable: 'ENV_FILE'
+        )
+    ]) {
+        script {
+            def rollbackImage = "${env.DOCKER_REGISTRY}/${env.APP_IMAGE_NAME}:${params.ROLLBACK_VERSION}"
             
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                export APP_IMAGE='${rollbackImage}' && \
-                export DROPLET_IP='${deploymentHost}' && \
-                docker-compose pull app && \
-                docker-compose --profile production up -d app"
-        """
+            // Create deployment environment file
+            sh """
+                echo 'APP_IMAGE=${rollbackImage}' > .env.deployment
+                echo 'DROPLET_IP=${env.DROPLET_IP}' >> .env.deployment
+                echo 'DEPLOY_ENV=${env.DEPLOY_ENV}' >> .env.deployment
+                
+                # Copy files to server
+                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no .env.deployment ${SSH_USER}@${env.DROPLET_IP}:${env.DEPLOYMENT_DIR}/.env
+                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no "${ENV_FILE}" ${SSH_USER}@${env.DROPLET_IP}:${env.DEPLOYMENT_DIR}/.env.production
+            """
+            
+            // Perform the rollback
+            sh """
+                ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${env.DROPLET_IP} "
+                    cd ${env.DEPLOYMENT_DIR} && \
+                    export APP_IMAGE='${rollbackImage}' && \
+                    export DROPLET_IP='${env.DROPLET_IP}' && \
+                    docker-compose pull app && \
+                    docker-compose --profile production up -d --no-deps app
+                "
+            """
+        }
     }
 }
