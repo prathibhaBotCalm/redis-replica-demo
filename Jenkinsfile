@@ -94,7 +94,7 @@ pipeline {
                         echo "Error determining build cause: ${e.getMessage()}"
                     }
                     
-                    if (env.DEPLOY_ENV == 'prod' && env.DEPLOY_TYPE == 'standard' && isTriggerFromGitHub) {
+                    if (branch == 'main' && env.DEPLOY_TYPE == 'standard' && isTriggerFromGitHub) {
                         env.DEPLOY_TYPE = 'canary'
                         echo "Auto-detected prod deployment from GitHub push. Using canary deployment for safety."
                     }
@@ -218,6 +218,9 @@ pipeline {
                             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/traefik"
                             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/scripts"
                             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/backup"
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/config/rclone"
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/grafana/dashboards"
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/grafana/datasources"
                         """
                         
                         // Fix 2: Copy the environment file with robust error handling
@@ -232,6 +235,22 @@ pipeline {
                                     echo "DEPLOY_ENV=${env.DEPLOY_ENV}" > default.env
                                     echo "APP_VERSION=${env.APP_VERSION}" >> default.env
                                     echo "DROPLET_IP=${DROPLET_IP}" >> default.env
+                                    echo "APP_PORT=3000" >> default.env
+                                    echo "REDIS_PASSWORD=redispassword" >> default.env
+                                    echo "REDIS_MASTER_NAME=mymaster" >> default.env
+                                    echo "REDIS_SENTINEL_QUORUM=2" >> default.env
+                                    echo "REDIS_MASTER_PORT=6379" >> default.env
+                                    echo "REDIS_SLAVE_1_PORT=6380" >> default.env
+                                    echo "REDIS_SLAVE_2_PORT=6381" >> default.env
+                                    echo "REDIS_SLAVE_3_PORT=6382" >> default.env
+                                    echo "REDIS_SLAVE_4_PORT=6383" >> default.env
+                                    echo "SENTINEL_1_PORT=26379" >> default.env
+                                    echo "SENTINEL_2_PORT=26380" >> default.env
+                                    echo "SENTINEL_3_PORT=26381" >> default.env
+                                    echo "BACKUP_INTERVAL=600" >> default.env
+                                    echo "MAX_BACKUPS=24" >> default.env
+                                    echo "RETENTION_DAYS=7" >> default.env
+                                    echo "GDRIVE_ENABLED=false" >> default.env
                                     scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no default.env ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env
                                 else
                                     scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no "${ENV_FILE}" ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env
@@ -245,6 +264,22 @@ pipeline {
                                 echo "DEPLOY_ENV=${env.DEPLOY_ENV}" > emergency.env
                                 echo "APP_VERSION=${env.APP_VERSION}" >> emergency.env
                                 echo "DROPLET_IP=${DROPLET_IP}" >> emergency.env
+                                echo "APP_PORT=3000" >> emergency.env
+                                echo "REDIS_PASSWORD=redispassword" >> emergency.env
+                                echo "REDIS_MASTER_NAME=mymaster" >> emergency.env
+                                echo "REDIS_SENTINEL_QUORUM=2" >> emergency.env
+                                echo "REDIS_MASTER_PORT=6379" >> emergency.env
+                                echo "REDIS_SLAVE_1_PORT=6380" >> emergency.env
+                                echo "REDIS_SLAVE_2_PORT=6381" >> emergency.env
+                                echo "REDIS_SLAVE_3_PORT=6382" >> emergency.env
+                                echo "REDIS_SLAVE_4_PORT=6383" >> emergency.env
+                                echo "SENTINEL_1_PORT=26379" >> emergency.env
+                                echo "SENTINEL_2_PORT=26380" >> emergency.env
+                                echo "SENTINEL_3_PORT=26381" >> emergency.env
+                                echo "BACKUP_INTERVAL=600" >> emergency.env
+                                echo "MAX_BACKUPS=24" >> emergency.env
+                                echo "RETENTION_DAYS=7" >> emergency.env
+                                echo "GDRIVE_ENABLED=false" >> emergency.env
                                 scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no emergency.env ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env
                             """
                         }
@@ -282,6 +317,111 @@ redis-server --slaveof ${REDIS_MASTER_HOST} ${REDIS_MASTER_PORT} --requirepass "
                             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "chmod +x ${DEPLOYMENT_DIR}/scripts/init-slave.sh"
                         """
                         
+                        // Create a Dockerfile for Redis backup
+                        def redisBackupDockerfile = '''FROM alpine:latest
+
+RUN apk add --no-cache bash redis rclone curl
+
+COPY backup.sh /backup.sh
+RUN chmod +x /backup.sh
+
+CMD ["/backup.sh"]
+'''
+
+                        def backupScript = '''#!/bin/bash
+set -e
+
+BACKUP_DIR="/backup"
+DATA_DIR="/data"
+TIMESTAMP=$(date +%Y%m%d%H%M%S)
+FILENAME="redis-dump-${TIMESTAMP}.rdb"
+
+# Ensure backup directory exists
+mkdir -p ${BACKUP_DIR}
+
+echo "Starting Redis backup at $(date)"
+
+# Copy the existing RDB file to backup directory
+if [ -f "${DATA_DIR}/dump.rdb" ]; then
+    cp ${DATA_DIR}/dump.rdb ${BACKUP_DIR}/${FILENAME}
+    echo "Backup created: ${BACKUP_DIR}/${FILENAME}"
+else
+    echo "Error: Redis dump file not found at ${DATA_DIR}/dump.rdb"
+    exit 1
+fi
+
+# Clean up old backups based on retention settings
+if [ "${MAX_BACKUPS}" -gt 0 ]; then
+    echo "Cleaning up old backups, keeping last ${MAX_BACKUPS}"
+    cd ${BACKUP_DIR} && ls -tp redis-dump-*.rdb | grep -v '/$' | tail -n +$((${MAX_BACKUPS}+1)) | xargs -I {} rm {} || true
+fi
+
+# Upload to Google Drive if enabled
+if [ "${GDRIVE_ENABLED}" = "true" ]; then
+    echo "Uploading backup to Google Drive"
+    if [ -f /config/rclone/rclone.conf ]; then
+        rclone --config=/config/rclone/rclone.conf copy ${BACKUP_DIR}/${FILENAME} gdrive:${GDRIVE_DIR}/
+        
+        # Clean up old backups in Google Drive
+        if [ "${GDRIVE_MAX_BACKUPS}" -gt 0 ]; then
+            echo "Cleaning up old backups in Google Drive, keeping last ${GDRIVE_MAX_BACKUPS}"
+            OLDER_THAN="$(date -d "${GDRIVE_RETENTION_DAYS} days ago" +%Y-%m-%d)"
+            rclone --config=/config/rclone/rclone.conf delete --min-age ${OLDER_THAN} gdrive:${GDRIVE_DIR}/ || true
+        fi
+    else
+        echo "Error: rclone configuration not found"
+    fi
+fi
+
+echo "Backup completed at $(date)"
+
+# Sleep for the specified interval before the next backup
+echo "Next backup in ${BACKUP_INTERVAL} seconds"
+sleep ${BACKUP_INTERVAL}
+'''
+
+                        // Write Dockerfile and backup script
+                        writeFile file: 'Dockerfile.redis-backup', text: redisBackupDockerfile
+                        writeFile file: 'backup.sh', text: backupScript
+                        
+                        // Create scripts directory and Dockerfile on remote server
+                        sh """
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/scripts"
+                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no Dockerfile.redis-backup ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/scripts/Dockerfile.redis-backup
+                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no backup.sh ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/scripts/backup.sh
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "chmod +x ${DEPLOYMENT_DIR}/scripts/backup.sh"
+                        """
+                        
+                        // Create a simple prometheus.yml file for monitoring
+                        def prometheusConfig = '''global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter-master:9121']
+      - targets: ['redis-exporter-slave1:9121']
+      - targets: ['redis-exporter-slave2:9121']
+      - targets: ['redis-exporter-slave3:9121']
+      - targets: ['redis-exporter-slave4:9121']
+
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  - job_name: 'nextjs'
+    metrics_path: '/api/metrics'
+    static_configs:
+      - targets: ['app:3000']
+'''
+                        writeFile file: 'prometheus.yml', text: prometheusConfig
+                        sh "scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no prometheus.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/prometheus.yml"
+                        
                         // Fix 6: Handle traefik configuration more safely
                         if (fileExists('traefik/traefik.yml')) {
                             sh "scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no traefik/traefik.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/traefik/"
@@ -314,6 +454,22 @@ log:
                             writeFile file: 'temp-traefik.yml', text: traefikConfig
                             sh "scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no temp-traefik.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/traefik/traefik.yml"
                         }
+                        
+                        // Create basic grafana datasource and dashboard configs
+                        def grafanaDatasource = '''apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+'''
+                        writeFile file: 'datasources.yml', text: grafanaDatasource
+                        sh """
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/grafana/datasources"
+                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no datasources.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/grafana/datasources/datasources.yml"
+                        """
                         
                         // Fix 7: Create docker networks with safer approach
                         sh """
@@ -476,12 +632,21 @@ def deployStandard() {
         def deploymentHost = env.DROPLET_IP
         def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
         
-        // Fix 8: Create a more structured deployment step for standard deployments
+        // Create deployment environment file with necessary variables
         sh """
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && echo 'APP_IMAGE=${appImage}' > .env.deployment"
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && echo 'DROPLET_IP=${deploymentHost}' >> .env.deployment"
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && export APP_IMAGE='${appImage}' && export DROPLET_IP='${deploymentHost}' && docker-compose pull app"
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && export APP_IMAGE='${appImage}' && export DROPLET_IP='${deploymentHost}' && docker-compose --profile production up -d app"
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
+                echo 'APP_IMAGE=${appImage}';
+                echo 'DROPLET_IP=${deploymentHost}';
+            } > .env.deployment"
+        """
+        
+        // Deploy the full application stack with production profile
+        sh """
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
+                export APP_IMAGE='${appImage}' && \
+                export DROPLET_IP='${deploymentHost}' && \
+                docker-compose pull && \
+                docker-compose --profile production up -d"
         """
     }
 }
@@ -493,7 +658,7 @@ def deployCanary() {
         def canaryWeight = params.CANARY_WEIGHT
         def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
         
-        // Fix 9: Create a better structured canary deployment
+        // Set up environment for canary deployment
         sh """
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
                 echo 'CANARY_IMAGE=${canaryImage}';
@@ -502,12 +667,24 @@ def deployCanary() {
                 echo 'DROPLET_IP=${deploymentHost}';
             } > .env.deployment"
             
+            # First deploy the main infrastructure (Redis, monitoring, etc.)
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
+                export APP_IMAGE='${appImage}' && \
+                export DROPLET_IP='${deploymentHost}' && \
+                docker-compose pull && \
+                docker-compose --profile production up -d redis-master redis-slave-1 redis-slave-2 redis-slave-3 redis-slave-4 \
+                sentinel-1 sentinel-2 sentinel-3 redis-backup \
+                prometheus grafana cadvisor \
+                redis-exporter-master redis-exporter-slave1 redis-exporter-slave2 redis-exporter-slave3 redis-exporter-slave4"
+                
+            # Then deploy both the stable and canary versions of the app
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
                 export CANARY_IMAGE='${canaryImage}' && \
                 export CANARY_WEIGHT='${canaryWeight}' && \
                 export APP_IMAGE='${appImage}' && \
                 export DROPLET_IP='${deploymentHost}' && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml --profile production up -d canary traefik"
+                docker-compose -f docker-compose.yml --profile production up -d app && \
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml up -d canary traefik"
         """
     }
 }
@@ -517,24 +694,25 @@ def promoteCanary() {
         def deploymentHost = env.DROPLET_IP
         def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
         
-        // Fix 10: Better structured canary promotion
+        // Update the main app to use the canary image (promotion)
         sh """
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
                 echo 'APP_IMAGE=${canaryImage}';
                 echo 'DROPLET_IP=${deploymentHost}';
-                echo 'CANARY_IMAGE=${canaryImage}';
-                echo 'CANARY_WEIGHT=${params.CANARY_WEIGHT}';
             } > .env.deployment"
             
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
                 export APP_IMAGE='${canaryImage}' && \
                 export DROPLET_IP='${deploymentHost}' && \
-                export CANARY_IMAGE='${canaryImage}' && \
-                export CANARY_WEIGHT='${params.CANARY_WEIGHT}' && \
                 docker-compose pull app && \
                 docker-compose --profile production up -d app && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary"
+            
+            # Traefik is no longer needed after promotion, so we can stop it
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop traefik && \
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f traefik || true"
         """
     }
 }
@@ -542,18 +720,31 @@ def promoteCanary() {
 def rollbackCanary() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
         def deploymentHost = env.DROPLET_IP
-        def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
         def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
         
-        // Fix 11: Improved canary rollback process
+        // Stop and remove the canary service, keeping the original app running
         sh """
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
+                echo 'APP_IMAGE=${appImage}';
+                echo 'DROPLET_IP=${deploymentHost}';
+            } > .env.deployment"
+            
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                export CANARY_IMAGE='${canaryImage}' && \
-                export CANARY_WEIGHT='${params.CANARY_WEIGHT}' && \
                 export APP_IMAGE='${appImage}' && \
                 export DROPLET_IP='${deploymentHost}' && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary || true && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true"
+            
+            # Also stop and remove Traefik if it's running
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop traefik || true && \
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f traefik || true"
+            
+            # Ensure the main app is still running with the stable image
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
+                export APP_IMAGE='${appImage}' && \
+                export DROPLET_IP='${deploymentHost}' && \
+                docker-compose --profile production up -d app"
         """
     }
 }
@@ -563,7 +754,7 @@ def deployRollback() {
         def deploymentHost = env.DROPLET_IP
         def rollbackImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${params.ROLLBACK_VERSION}"
         
-        // Fix 12: Better structured rollback deployment
+        // Rollback by updating the app to the specified version while keeping the rest of the stack running
         sh """
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
                 echo 'APP_IMAGE=${rollbackImage}';
