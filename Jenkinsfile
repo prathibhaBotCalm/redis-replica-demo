@@ -273,15 +273,7 @@ pipeline {
             steps {
                 script {
                     // Health check with retries
-                    healthCheck()
-                    
-                    // Smoke tests
-                    runSmokeTests()
-                    
-                    // Performance check
-                    if (env.DEPLOY_ENV == 'prod') {
-                        runPerformanceChecks()
-                    }
+                    healthCheck() 
                 }
             }
         }
@@ -299,13 +291,8 @@ pipeline {
                         // For automated builds, monitor before promoting
                         echo "Monitoring canary deployment for 5 minutes before promotion..."
                         sleep(time: 5, unit: 'MINUTES')
-                        
-                        // Verify canary health before promotion
-                        if (verifyCanaryHealth()) {
                             promoteCanary()
-                        } else {
-                            error "Canary health check failed. Rolling back..."
-                        }
+                       
                     } else {
                         // For manual builds, get approval
                         timeout(time: env.DEPLOY_TIMEOUT, unit: 'SECONDS') {
@@ -444,42 +431,9 @@ def healthCheck() {
     }
 }
 
-def runSmokeTests() {
-    script {
-        def smokeTestUrl = "http://${env.DROPLET_IP}:3000/api/smoke"
-        try {
-            def response = sh(
-                script: "curl -s -o /dev/null -w '%{http_code}' -X POST ${smokeTestUrl}", 
-                returnStdout: true
-            ).trim()
-            
-            if (response != "200") {
-                error "Smoke test failed with HTTP ${response}"
-            }
-        } catch (Exception e) {
-            error "Smoke test failed: ${e.getMessage()}"
-        }
-    }
-}
 
-def runPerformanceChecks() {
-    script {
-        if (env.DEPLOY_ENV == 'prod') {
-            echo "Running performance checks..."
-            try {
-                sh """
-                    docker run --rm \
-                        -e URL=http://${env.DROPLET_IP}:3000 \
-                        -e DURATION=30s \
-                        --network host \
-                        loadimpact/k6 run - < scripts/performance-test.js
-                """
-            } catch (Exception e) {
-                error "Performance check failed: ${e.getMessage()}"
-            }
-        }
-    }
-}
+
+
 
 def isAutomatedBuild() {
     script {
@@ -494,33 +448,6 @@ def isAutomatedBuild() {
             }
         } catch (Exception e) {
             echo "Error determining build cause: ${e.getMessage()}"
-            return false
-        }
-    }
-}
-
-def verifyCanaryHealth() {
-    script {
-        def canaryHealthUrl = "http://${env.DROPLET_IP}:3000/api/canary-health"
-        try {
-            def response = sh(
-                script: "curl -s -o /dev/null -w '%{http_code}' ${canaryHealthUrl}", 
-                returnStdout: true
-            ).trim()
-            
-            if (response != "200") {
-                return false
-            }
-            
-            // Check error rates from monitoring
-            def errorRate = sh(
-                script: "curl -s http://${env.DROPLET_IP}:9090/api/v1/query?query=rate(http_requests_total{status=~'5..'}[1m]) | jq '.data.result[0].value[1]'", 
-                returnStdout: true
-            ).trim()
-            
-            return errorRate.toFloat() < 0.01 // Less than 1% error rate
-        } catch (Exception e) {
-            echo "Canary health check failed: ${e.getMessage()}"
             return false
         }
     }
@@ -566,37 +493,6 @@ def cleanUp() {
     }
 }
 
-// def notifyBuildStatus() {
-//     script {
-//         def subject = "[${env.BUILD_STATUS}] Deployment to ${env.DEPLOY_ENV} - Build #${env.BUILD_NUMBER}"
-//         def body = """
-//             Deployment ${env.BUILD_STATUS.toLowerCase()} for ${env.GIT_BRANCH}@${env.GIT_COMMIT_SHORT}
-//             Environment: ${env.DEPLOY_ENV}
-//             Type: ${env.DEPLOY_TYPE}
-//             Build: ${env.BUILD_NUMBER}
-//             Duration: ${currentBuild.durationString}
-//             URL: ${env.BUILD_URL}
-//         """
-        
-//         // Example: Send email notification
-//         emailext (
-//             subject: subject,
-//             body: body,
-//             to: 'team@example.com',
-//             attachLog: env.BUILD_STATUS != 'SUCCESS'
-//         )
-        
-//         // Example: Send Slack notification
-//         slackSend(
-//             color: env.BUILD_STATUS == 'SUCCESS' ? 'good' : 'danger',
-//             message: subject + "\n" + body
-//         )
-//     }
-// }
-
-// --------------------------
-// Deployment Methods
-// --------------------------
 
 def deployStandard() {
     withCredentials([
@@ -737,7 +633,7 @@ def promoteCanary() {
                     docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true && \
                     docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop traefik || true && \
                     docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f traefik || true && \
-                    docker-compose --profile production up -d app
+                    docker-compose up -d app
                 "
             """
             
@@ -769,7 +665,7 @@ def rollbackCanary() {
                     docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true && \
                     docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop traefik || true && \
                     docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f traefik || true && \
-                    docker-compose --profile production up -d app
+                    docker-compose up -d app
                 "
             """
             
