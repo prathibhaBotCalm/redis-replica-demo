@@ -71,6 +71,16 @@ pipeline {
                     
                     echo "Deploying to environment: ${env.DEPLOY_ENV}"
                     
+                    // Store a separate value for the credential ID determination
+                    // This is the key fix for auto environment
+                    if (env.DEPLOY_ENV == 'auto') {
+                        env.CRED_ENV = 'prod'  // Use prod-env-file when auto is detected
+                        echo "Using credential ID: ${env.CRED_ENV}-env-file for auto environment"
+                    } else {
+                        env.CRED_ENV = env.DEPLOY_ENV
+                        echo "Using credential ID: ${env.CRED_ENV}-env-file"
+                    }
+                    
                     // Safer check for automatic deployments
                     def isTriggerFromGitHub = false
                     try {
@@ -190,14 +200,15 @@ pipeline {
         stage('Prepare Deployment Target') {
             steps {
                 script {
-                    // Print diagnostic information
+                    // Print diagnostic information about credentials
                     echo "Current environment: ${env.DEPLOY_ENV}"
-                    echo "Credentials ID to look for: ${env.DEPLOY_ENV}-env-file"
+                    echo "Credential environment: ${env.CRED_ENV}"
+                    echo "Credentials ID to look for: ${env.CRED_ENV}-env-file"
                 }
                 
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
-                    file(credentialsId: "${env.DEPLOY_ENV}-env-file", variable: 'ENV_FILE')
+                    file(credentialsId: "${env.CRED_ENV}-env-file", variable: 'ENV_FILE')
                 ]) {
                     script {
                         // Fix 1: Break down the complex SSH commands into smaller, manageable chunks
@@ -217,7 +228,7 @@ pipeline {
                             // Create a default .env file if the credential doesn't exist
                             sh """
                                 if [ ! -s "${ENV_FILE}" ]; then
-                                    echo "Creating default .env file since '${env.DEPLOY_ENV}-env-file' credential is missing"
+                                    echo "Creating default .env file since '${env.CRED_ENV}-env-file' credential is missing"
                                     echo "DEPLOY_ENV=${env.DEPLOY_ENV}" > default.env
                                     echo "APP_VERSION=${env.APP_VERSION}" >> default.env
                                     echo "DROPLET_IP=${DROPLET_IP}" >> default.env
@@ -374,7 +385,19 @@ log:
                 script {
                     // For automatic builds, we can optionally set a timeout and then auto-promote
                     // if no issues are detected during the canary phase
-                    if (currentBuild.getBuildCauses()[0].toString().contains('github')) {
+                    def isTriggerFromGitHub = false
+                    try {
+                        def causes = currentBuild.getBuildCauses()
+                        causes.each { cause ->
+                            if (cause.toString().contains('github')) {
+                                isTriggerFromGitHub = true
+                            }
+                        }
+                    } catch (Exception e) {
+                        echo "Error determining build cause: ${e.getMessage()}"
+                    }
+                    
+                    if (isTriggerFromGitHub) {
                         echo "Automated deployment from GitHub push. Monitoring canary for issues..."
                         
                         // Sleep for a monitoring period (e.g., 5 minutes)
