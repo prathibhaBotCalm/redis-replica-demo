@@ -122,22 +122,43 @@ pipeline {
                 withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
                     script {
                         def deploymentHost = env.DROPLET_IP
+                        def deploymentDir = env.DEPLOYMENT_DIR
                         
                         // Create deployment directory and required subdirectories
-                        sh """
-                            ssh -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
-                                mkdir -p ${env.DEPLOYMENT_DIR} && \
-                                mkdir -p ${env.DEPLOYMENT_DIR}/traefik
+                        sh '''
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
+                                mkdir -p ''' + "${deploymentDir}" + ''' && \
+                                mkdir -p ''' + "${deploymentDir}/traefik" + '''
                             "
-                        """
+                        '''
                         
-                        // Copy necessary files to deployment target
-                        sh """
-                            scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${deploymentHost}:${env.DEPLOYMENT_DIR}/
-                            scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no docker-compose.canary.yml ${SSH_USER}@${deploymentHost}:${env.DEPLOYMENT_DIR}/
-                            scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no .env ${SSH_USER}@${deploymentHost}:${env.DEPLOYMENT_DIR}/
-                            scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no traefik/traefik.yml ${SSH_USER}@${deploymentHost}:${env.DEPLOYMENT_DIR}/traefik/
-                        """
+                        // Copy necessary files to deployment target using more secure approach
+                        sh '''
+                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no docker-compose.yml ''' + "${SSH_USER}@${deploymentHost}:${deploymentDir}/" + '''
+                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no docker-compose.canary.yml ''' + "${SSH_USER}@${deploymentHost}:${deploymentDir}/" + '''
+                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no .env ''' + "${SSH_USER}@${deploymentHost}:${deploymentDir}/" + '''
+                        '''
+                        
+                        // Check if traefik directory exists before copying
+                        sh '''
+                            if [ -d "traefik" ] && [ -f "traefik/traefik.yml" ]; then
+                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no traefik/traefik.yml ''' + "${SSH_USER}@${deploymentHost}:${deploymentDir}/traefik/" + '''
+                            else
+                                echo "Traefik config not found, creating minimal config"
+                                mkdir -p traefik
+                                echo "api:" > traefik/traefik.yml
+                                echo "  dashboard: true" >> traefik/traefik.yml
+                                echo "  insecure: true" >> traefik/traefik.yml
+                                echo "entryPoints:" >> traefik/traefik.yml
+                                echo "  web:" >> traefik/traefik.yml
+                                echo "    address: \":80\"" >> traefik/traefik.yml
+                                echo "providers:" >> traefik/traefik.yml
+                                echo "  docker:" >> traefik/traefik.yml
+                                echo "    endpoint: \"unix:///var/run/docker.sock\"" >> traefik/traefik.yml
+                                echo "    exposedByDefault: false" >> traefik/traefik.yml
+                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no traefik/traefik.yml ''' + "${SSH_USER}@${deploymentHost}:${deploymentDir}/traefik/" + '''
+                            fi
+                        '''
                     }
                 }
             }
@@ -248,79 +269,103 @@ pipeline {
 def deployStandard() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
         def deploymentHost = env.DROPLET_IP
+        def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
         
-        // Deploy standard instance
-        sh """
-            ssh -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
-                cd ${env.DEPLOYMENT_DIR} && \
-                echo 'APP_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}' > .env.deployment && \
+        // More secure way to use SSH key without string interpolation
+        sh '''
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
+                cd ''' + "${env.DEPLOYMENT_DIR}" + ''' && \
+                cat > .env.deployment << EOF
+APP_IMAGE=''' + "${appImage}" + '''
+EOF
+                export APP_IMAGE=''' + "${appImage}" + ''' && \
                 docker-compose pull app && \
                 docker-compose --profile production up -d app
             "
-        """
+        '''
     }
 }
 
 def deployCanary() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
         def deploymentHost = env.DROPLET_IP
+        def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
+        def canaryWeight = params.CANARY_WEIGHT
         
-        // First deploy canary instance
-        sh """
-            ssh -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
-                cd ${env.DEPLOYMENT_DIR} && \
-                echo 'CANARY_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}' >> .env.deployment && \
-                echo 'CANARY_WEIGHT=${params.CANARY_WEIGHT}' >> .env.deployment && \
+        // More secure way to use SSH key without string interpolation
+        sh '''
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
+                cd ''' + "${env.DEPLOYMENT_DIR}" + ''' && \
+                cat > .env.deployment << EOF
+CANARY_IMAGE=''' + "${canaryImage}" + '''
+CANARY_WEIGHT=''' + "${canaryWeight}" + '''
+EOF
+                export CANARY_IMAGE=''' + "${canaryImage}" + ''' && \
+                export CANARY_WEIGHT=''' + "${canaryWeight}" + ''' && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml --profile production up -d canary traefik
             "
-        """
+        '''
     }
 }
 
 def promoteCanary() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
         def deploymentHost = env.DROPLET_IP
+        def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
         
-        // Update the production service to use the canary image
-        sh """
-            ssh -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
-                cd ${env.DEPLOYMENT_DIR} && \
-                echo 'APP_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}' > .env.deployment && \
+        // More secure way to use SSH key without string interpolation
+        sh '''
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
+                cd ''' + "${env.DEPLOYMENT_DIR}" + ''' && \
+                cat > .env.deployment << EOF
+APP_IMAGE=''' + "${canaryImage}" + '''
+EOF
+                export APP_IMAGE=''' + "${canaryImage}" + ''' && \
+                export CANARY_IMAGE=''' + "${canaryImage}" + ''' && \
+                export CANARY_WEIGHT=''' + "${params.CANARY_WEIGHT}" + ''' && \
                 docker-compose pull app && \
                 docker-compose --profile production up -d app && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary
             "
-        """
+        '''
     }
 }
 
 def rollbackCanary() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
         def deploymentHost = env.DROPLET_IP
+        def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
         
-        // Remove canary instances and revert to stable
-        sh """
-            ssh -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
-                cd ${env.DEPLOYMENT_DIR} && \
+        // More secure way to use SSH key without string interpolation
+        sh '''
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
+                cd ''' + "${env.DEPLOYMENT_DIR}" + ''' && \
+                export CANARY_IMAGE=''' + "${canaryImage}" + ''' && \
+                export CANARY_WEIGHT=''' + "${params.CANARY_WEIGHT}" + ''' && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary || true && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true
             "
-        """
+        '''
     }
 }
 
 def deployRollback() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
         def deploymentHost = env.DROPLET_IP
+        def rollbackImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${params.ROLLBACK_VERSION}"
         
-        sh """
-            ssh -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
-                cd ${env.DEPLOYMENT_DIR} && \
-                echo 'APP_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${params.ROLLBACK_VERSION}' > .env.deployment && \
+        // More secure way to use SSH key without string interpolation
+        sh '''
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
+                cd ''' + "${env.DEPLOYMENT_DIR}" + ''' && \
+                cat > .env.deployment << EOF
+APP_IMAGE=''' + "${rollbackImage}" + '''
+EOF
+                export APP_IMAGE=''' + "${rollbackImage}" + ''' && \
                 docker-compose pull app && \
                 docker-compose --profile production up -d app
             "
-        """
+        '''
     }
 }

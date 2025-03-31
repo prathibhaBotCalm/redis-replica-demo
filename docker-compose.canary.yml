@@ -5,9 +5,7 @@ services:
   canary:
     image: ${CANARY_IMAGE}
     ports:
-      - '3001:${APP_PORT}'  # Exposed on a different port
-    volumes:
-      - app-logs:/app/logs
+      - '3001:3000'  # Exposed on a different port
     networks:
       - redis-network
       - monitoring-network
@@ -22,11 +20,12 @@ services:
       - .env.deployment
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.canary.rule=Host(`your-domain.com`)"
-      - "traefik.http.services.canary.loadbalancer.server.port=${APP_PORT}"
+      - "traefik.http.routers.canary.rule=Host(`${DROPLET_IP}`)"
+      - "traefik.http.services.canary.loadbalancer.server.port=3000"
       - "traefik.http.routers.canary.middlewares=canary-splitter"
       - "traefik.http.middlewares.canary-splitter.traffic.weight.services.canary.weight=${CANARY_WEIGHT}"
-      - "traefik.http.middlewares.canary-splitter.traffic.weight.services.app.weight=$((100-CANARY_WEIGHT))"
+      - "traefik.http.middlewares.canary-splitter.traffic.weight.services.app.weight=80"
+      - "traefik.http.routers.canary.entrypoints=web"
 
   # Traefik reverse proxy for canary deployment
   traefik:
@@ -36,30 +35,24 @@ services:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--entrypoints.web.address=:80"
-      - "--entrypoints.websecure.address=:443"
+      - "--providers.docker.network=monitoring-network"
+      - "--accesslog=true"
+      - "--log.level=DEBUG"
     ports:
       - "80:80"
-      - "443:443"
       - "8080:8080"  # Traefik dashboard
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./traefik/traefik.yml:/traefik.yml:ro
-      - ./traefik/acme.json:/acme.json
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
     networks:
       - redis-network
       - monitoring-network
     restart: unless-stopped
     profiles:
       - production
-      - development
-      - canary
 
 networks:
   redis-network:
     external: true
   monitoring-network:
-    external: true
-
-volumes:
-  app-logs:
     external: true

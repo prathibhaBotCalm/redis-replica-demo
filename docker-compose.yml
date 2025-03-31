@@ -6,8 +6,7 @@ networks:
 
 services:
   app:
-    build:
-      context: .
+    image: ${APP_IMAGE}
     ports:
       - '${APP_PORT}:${APP_PORT}'
     networks:
