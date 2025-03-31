@@ -19,7 +19,6 @@ services:
       - 'traefik.enable=true'
       - 'traefik.http.routers.app.rule=Host(`${DROPLET_IP}`)'
       - 'traefik.http.services.app.loadbalancer.server.port=${APP_PORT}'
-      - 'traefik.http.routers.app.middlewares=canary-splitter'
       - 'traefik.http.routers.app.entrypoints=web'
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${APP_PORT}/api/health"]
