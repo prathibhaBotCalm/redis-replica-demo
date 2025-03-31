@@ -119,7 +119,10 @@ pipeline {
         
         stage('Prepare Deployment Target') {
             steps {
-                withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
+                    file(credentialsId: "${params.ENVIRONMENT}-env-file", variable: 'ENV_FILE')
+                ]) {
                     script {
                         def deploymentHost = env.DROPLET_IP
                         def deploymentDir = env.DEPLOYMENT_DIR
@@ -128,7 +131,20 @@ pipeline {
                         sh '''
                             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
                                 mkdir -p ''' + "${deploymentDir}" + ''' && \
-                                mkdir -p ''' + "${deploymentDir}/traefik" + '''
+                                mkdir -p ''' + "${deploymentDir}/traefik" + ''' && \
+                                mkdir -p ''' + "${deploymentDir}/scripts" + '''
+                            "
+                        '''
+                        
+                        // Copy the environment-specific env file from Jenkins credentials
+                        sh '''
+                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no "${ENV_FILE}" ''' + "${SSH_USER}@${deploymentHost}:${deploymentDir}/.env" + '''
+                        '''
+                        
+                        // Add DROPLET_IP to env file if not present
+                        sh '''
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
+                                grep -q 'DROPLET_IP=' ''' + "${deploymentDir}/.env" + ''' || echo 'DROPLET_IP=''' + "${deploymentHost}" + '''' >> ''' + "${deploymentDir}/.env" + '''
                             "
                         '''
                         
@@ -136,28 +152,83 @@ pipeline {
                         sh '''
                             scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no docker-compose.yml ''' + "${SSH_USER}@${deploymentHost}:${deploymentDir}/" + '''
                             scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no docker-compose.canary.yml ''' + "${SSH_USER}@${deploymentHost}:${deploymentDir}/" + '''
-                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no .env ''' + "${SSH_USER}@${deploymentHost}:${deploymentDir}/" + '''
                         '''
                         
-                        // Check if traefik directory exists before copying
+                        // Create directory structure for Redis scripts
+                        sh '''
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
+                                mkdir -p ''' + "${deploymentDir}/scripts" + '''
+                                
+                                # Create minimal Redis master init script if it doesn't exist
+                                cat > ''' + "${deploymentDir}/scripts/init-master.sh" + ''' << 'EOF'
+#!/bin/bash
+echo "Redis master configuration"
+redis-server --requirepass "${REDIS_PASSWORD}"
+EOF
+                                
+                                # Create minimal Redis slave init script if it doesn't exist
+                                cat > ''' + "${deploymentDir}/scripts/init-slave.sh" + ''' << 'EOF'
+#!/bin/bash
+echo "Redis slave configuration"
+redis-server --slaveof ${REDIS_MASTER_HOST} ${REDIS_MASTER_PORT} --requirepass "${REDIS_PASSWORD}" --masterauth "${REDIS_PASSWORD}"
+EOF
+
+                                # Make scripts executable
+                                chmod +x ''' + "${deploymentDir}/scripts/init-master.sh" + '''
+                                chmod +x ''' + "${deploymentDir}/scripts/init-slave.sh" + '''
+                            "
+                        '''
+                        
+                        // Check if traefik directory exists and create minimal config if needed
                         sh '''
                             if [ -d "traefik" ] && [ -f "traefik/traefik.yml" ]; then
                                 scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no traefik/traefik.yml ''' + "${SSH_USER}@${deploymentHost}:${deploymentDir}/traefik/" + '''
                             else
-                                echo "Traefik config not found, creating minimal config"
-                                mkdir -p traefik
-                                echo "api:" > traefik/traefik.yml
-                                echo "  dashboard: true" >> traefik/traefik.yml
-                                echo "  insecure: true" >> traefik/traefik.yml
-                                echo "entryPoints:" >> traefik/traefik.yml
-                                echo "  web:" >> traefik/traefik.yml
-                                echo "    address: \":80\"" >> traefik/traefik.yml
-                                echo "providers:" >> traefik/traefik.yml
-                                echo "  docker:" >> traefik/traefik.yml
-                                echo "    endpoint: \"unix:///var/run/docker.sock\"" >> traefik/traefik.yml
-                                echo "    exposedByDefault: false" >> traefik/traefik.yml
-                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no traefik/traefik.yml ''' + "${SSH_USER}@${deploymentHost}:${deploymentDir}/traefik/" + '''
+                                ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
+                                    echo "Traefik config not found, creating minimal config"
+                                    cat > ''' + "${deploymentDir}/traefik/traefik.yml" + ''' << EOF
+api:
+  dashboard: true
+  insecure: true
+
+entryPoints:
+  web:
+    address: \":80\"
+  metrics:
+    address: \":8082\"
+
+providers:
+  docker:
+    endpoint: \"unix:///var/run/docker.sock\"
+    exposedByDefault: false
+    network: monitoring-network
+
+metrics:
+  prometheus:
+    entryPoint: metrics
+    addServicesLabels: true
+    addEntryPointsLabels: true
+
+log:
+  level: DEBUG
+EOF
+                                "
                             fi
+                        '''
+                        
+                        // Create backup directories
+                        sh '''
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
+                                mkdir -p ''' + "${deploymentDir}/backup" + '''
+                            "
+                        '''
+                        
+                        // Create docker networks if they don't exist
+                        sh '''
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ''' + "${SSH_USER}@${deploymentHost}" + ''' "
+                                docker network ls | grep redis-network || docker network create redis-network
+                                docker network ls | grep monitoring-network || docker network create monitoring-network
+                            "
                         '''
                     }
                 }
@@ -277,8 +348,10 @@ def deployStandard() {
                 cd ''' + "${env.DEPLOYMENT_DIR}" + ''' && \
                 cat > .env.deployment << EOF
 APP_IMAGE=''' + "${appImage}" + '''
+DROPLET_IP=''' + "${deploymentHost}" + '''
 EOF
                 export APP_IMAGE=''' + "${appImage}" + ''' && \
+                export DROPLET_IP=''' + "${deploymentHost}" + ''' && \
                 docker-compose pull app && \
                 docker-compose --profile production up -d app
             "
@@ -291,6 +364,7 @@ def deployCanary() {
         def deploymentHost = env.DROPLET_IP
         def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
         def canaryWeight = params.CANARY_WEIGHT
+        def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
         
         // More secure way to use SSH key without string interpolation
         sh '''
@@ -299,9 +373,13 @@ def deployCanary() {
                 cat > .env.deployment << EOF
 CANARY_IMAGE=''' + "${canaryImage}" + '''
 CANARY_WEIGHT=''' + "${canaryWeight}" + '''
+APP_IMAGE=''' + "${appImage}" + '''
+DROPLET_IP=''' + "${deploymentHost}" + '''
 EOF
                 export CANARY_IMAGE=''' + "${canaryImage}" + ''' && \
                 export CANARY_WEIGHT=''' + "${canaryWeight}" + ''' && \
+                export APP_IMAGE=''' + "${appImage}" + ''' && \
+                export DROPLET_IP=''' + "${deploymentHost}" + ''' && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml --profile production up -d canary traefik
             "
         '''
@@ -319,8 +397,12 @@ def promoteCanary() {
                 cd ''' + "${env.DEPLOYMENT_DIR}" + ''' && \
                 cat > .env.deployment << EOF
 APP_IMAGE=''' + "${canaryImage}" + '''
+DROPLET_IP=''' + "${deploymentHost}" + '''
+CANARY_IMAGE=''' + "${canaryImage}" + '''
+CANARY_WEIGHT=''' + "${params.CANARY_WEIGHT}" + '''
 EOF
                 export APP_IMAGE=''' + "${canaryImage}" + ''' && \
+                export DROPLET_IP=''' + "${deploymentHost}" + ''' && \
                 export CANARY_IMAGE=''' + "${canaryImage}" + ''' && \
                 export CANARY_WEIGHT=''' + "${params.CANARY_WEIGHT}" + ''' && \
                 docker-compose pull app && \
@@ -336,6 +418,7 @@ def rollbackCanary() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
         def deploymentHost = env.DROPLET_IP
         def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
+        def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
         
         // More secure way to use SSH key without string interpolation
         sh '''
@@ -343,6 +426,8 @@ def rollbackCanary() {
                 cd ''' + "${env.DEPLOYMENT_DIR}" + ''' && \
                 export CANARY_IMAGE=''' + "${canaryImage}" + ''' && \
                 export CANARY_WEIGHT=''' + "${params.CANARY_WEIGHT}" + ''' && \
+                export APP_IMAGE=''' + "${appImage}" + ''' && \
+                export DROPLET_IP=''' + "${deploymentHost}" + ''' && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary || true && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true
             "
@@ -361,8 +446,10 @@ def deployRollback() {
                 cd ''' + "${env.DEPLOYMENT_DIR}" + ''' && \
                 cat > .env.deployment << EOF
 APP_IMAGE=''' + "${rollbackImage}" + '''
+DROPLET_IP=''' + "${deploymentHost}" + '''
 EOF
                 export APP_IMAGE=''' + "${rollbackImage}" + ''' && \
+                export DROPLET_IP=''' + "${deploymentHost}" + ''' && \
                 docker-compose pull app && \
                 docker-compose --profile production up -d app
             "
