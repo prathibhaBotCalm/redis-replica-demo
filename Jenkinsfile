@@ -410,8 +410,6 @@ EOF
     }
 }
 
-// Helper functions for deployment strategies would be the same as in your current Jenkinsfile
-
 // Helper functions for deployment strategies
 def deployStandard() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
