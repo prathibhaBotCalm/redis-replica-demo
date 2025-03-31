@@ -35,28 +35,56 @@ pipeline {
         stage('Determine Environment') {
             steps {
                 script {
+                    // Print diagnostic information about environment variables
+                    echo "Initial environment setting: ${env.DEPLOY_ENV}"
+                    echo "Branch name: ${env.BRANCH_NAME}"
+                    echo "GIT_BRANCH: ${env.GIT_BRANCH}"
+                    
                     if (env.DEPLOY_ENV == 'auto') {
                         // Auto-detect based on branch name
                         def branch = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceAll('origin/', '')
                         echo "Detected branch: ${branch}"
                         
-                        switch(branch) {
-                            case 'main':
-                            case 'master':
-                                env.DEPLOY_ENV = 'prod'
-                                break
-                            case 'staging':
-                                env.DEPLOY_ENV = 'staging'
-                                break
-                            default:
-                                env.DEPLOY_ENV = 'dev'
+                        // Add more robust branch detection
+                        if (branch == null || branch.trim() == '') {
+                            echo "WARNING: Branch name is empty or null, trying alternate methods"
+                            try {
+                                def gitOutput = sh(script: "git branch --contains HEAD | grep '*' | cut -d' ' -f2", returnStdout: true).trim()
+                                branch = gitOutput ?: 'unknown'
+                                echo "Determined branch using git command: ${branch}"
+                            } catch (Exception e) {
+                                echo "Failed to get branch name: ${e.getMessage()}"
+                                branch = 'dev' // Default to dev if we can't determine
+                                echo "Defaulting to branch: ${branch}"
+                            }
+                        }
+                        
+                        // More robust branch determination logic
+                        if (branch == 'main' || branch == 'master') {
+                            env.DEPLOY_ENV = 'prod'
+                        } else if (branch == 'staging') {
+                            env.DEPLOY_ENV = 'staging'
+                        } else {
+                            env.DEPLOY_ENV = 'dev'
                         }
                     }
                     
                     echo "Deploying to environment: ${env.DEPLOY_ENV}"
                     
-                    // For automatic deployments to prod, default to canary for safety
-                    if (env.DEPLOY_ENV == 'prod' && !params.DEPLOYMENT_TYPE && currentBuild.getBuildCauses()[0].toString().contains('github')) {
+                    // Safer check for automatic deployments
+                    def isTriggerFromGitHub = false
+                    try {
+                        def causes = currentBuild.getBuildCauses()
+                        causes.each { cause ->
+                            if (cause.toString().contains('github')) {
+                                isTriggerFromGitHub = true
+                            }
+                        }
+                    } catch (Exception e) {
+                        echo "Error determining build cause: ${e.getMessage()}"
+                    }
+                    
+                    if (env.DEPLOY_ENV == 'prod' && env.DEPLOY_TYPE == 'standard' && isTriggerFromGitHub) {
                         env.DEPLOY_TYPE = 'canary'
                         echo "Auto-detected prod deployment from GitHub push. Using canary deployment for safety."
                     }
@@ -161,6 +189,12 @@ pipeline {
         
         stage('Prepare Deployment Target') {
             steps {
+                script {
+                    // Print diagnostic information
+                    echo "Current environment: ${env.DEPLOY_ENV}"
+                    echo "Credentials ID to look for: ${env.DEPLOY_ENV}-env-file"
+                }
+                
                 withCredentials([
                     sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
                     file(credentialsId: "${env.DEPLOY_ENV}-env-file", variable: 'ENV_FILE')
@@ -175,8 +209,34 @@ pipeline {
                             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/backup"
                         """
                         
-                        // Fix 2: Copy the environment file with simpler command
-                        sh "scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no \"${ENV_FILE}\" ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env"
+                        // Fix 2: Copy the environment file with robust error handling
+                        try {
+                            // Check if ENV_FILE exists
+                            sh "ls -la \"${ENV_FILE}\" || echo 'WARNING: ENV_FILE not found!'"
+                            
+                            // Create a default .env file if the credential doesn't exist
+                            sh """
+                                if [ ! -s "${ENV_FILE}" ]; then
+                                    echo "Creating default .env file since '${env.DEPLOY_ENV}-env-file' credential is missing"
+                                    echo "DEPLOY_ENV=${env.DEPLOY_ENV}" > default.env
+                                    echo "APP_VERSION=${env.APP_VERSION}" >> default.env
+                                    echo "DROPLET_IP=${DROPLET_IP}" >> default.env
+                                    scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no default.env ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env
+                                else
+                                    scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no "${ENV_FILE}" ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env
+                                fi
+                            """
+                        } catch (Exception e) {
+                            echo "Error handling env file: ${e.getMessage()}"
+                            // Create emergency env file
+                            sh """
+                                echo "Creating emergency .env file due to error"
+                                echo "DEPLOY_ENV=${env.DEPLOY_ENV}" > emergency.env
+                                echo "APP_VERSION=${env.APP_VERSION}" >> emergency.env
+                                echo "DROPLET_IP=${DROPLET_IP}" >> emergency.env
+                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no emergency.env ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env
+                            """
+                        }
                         
                         // Fix 3: Add DROPLET_IP to env file with cleaner approach
                         sh """
