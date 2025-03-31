@@ -21,7 +21,7 @@ pipeline {
         choice(name: 'DEPLOYMENT_TYPE', choices: ['standard', 'canary', 'rollback'], description: 'Deployment type')
         string(name: 'CANARY_WEIGHT', defaultValue: '20', description: 'Percentage of traffic to route to canary (1-99)')
         string(name: 'ROLLBACK_VERSION', defaultValue: '', description: 'Version to rollback to (required for rollback)')
-        string(name: 'REDIS_MAX_ATTEMPTS', defaultValue: '30', description: 'Maximum attempts to wait for Redis readiness')
+        string(name: 'REDIS_MAX_ATTEMPTS', defaultValue: '50', description: 'Maximum attempts to wait for Redis readiness')
         string(name: 'REDIS_SLEEP_DURATION', defaultValue: '5', description: 'Sleep duration between Redis readiness checks (in seconds)')
     }
     
@@ -503,7 +503,7 @@ def deployCanary() {
             echo "Waiting for Redis infrastructure to be ready..."
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
                 attempt=0; \
-                max_attempts=${params.REDIS_MAX_ATTEMPTS ?: 30}; \
+                max_attempts=${params.REDIS_MAX_ATTEMPTS ?: 50}; \
                 sleep_duration=${params.REDIS_SLEEP_DURATION ?: 5}; \
                 until [ \$attempt -ge \$max_attempts ] || docker exec -i \\\$(docker ps -q -f name=redis-master) redis-cli -a \\\${REDIS_PASSWORD} PING | grep -q 'PONG'; do \
                     attempt=\\\$((attempt+1)); \
