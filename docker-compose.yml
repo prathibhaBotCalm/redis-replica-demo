@@ -415,6 +415,34 @@ services:
     profiles:
       - production
 
+# Add to docker-compose.yml
+  traefik:
+    image: traefik:v2.8
+    command:
+      - '--api.insecure=true'
+      - '--providers.docker=true'
+      - '--providers.docker.exposedbydefault=false'
+      - '--entrypoints.web.address=:80'
+      - '--entrypoints.web-secure.address=:443'
+      - '--providers.docker.network=monitoring-network'
+      - '--accesslog=true'
+      - '--log.level=DEBUG'
+    ports:
+      - '80:80'
+      - '443:443'
+      - '8080:8080' # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/opt/app/traefik/traefik.yml:ro
+    networks:
+      - redis-network
+      - monitoring-network
+    restart: unless-stopped
+    profiles:
+      - production
+      - development
+      - canary
+
 volumes:
   redis-data:
     driver: local
