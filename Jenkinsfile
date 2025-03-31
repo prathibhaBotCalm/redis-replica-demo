@@ -259,6 +259,9 @@ pipeline {
                         sh """
                             # Copy docker-compose files
                             scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no docker-compose*.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/
+
+                            # Copy db dump
+                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no backup/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/backup/
                             
                             # Copy Traefik configuration
                             if [ -d "traefik" ]; then
