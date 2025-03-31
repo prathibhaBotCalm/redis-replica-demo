@@ -1,11 +1,10 @@
 version: '3.8'
 
 services:
-  # Canary version of the app service
   canary:
     image: ${CANARY_IMAGE}
     ports:
-      - '3001:${APP_PORT}' # Exposed on a different port
+      - '3001:${APP_PORT}'
     networks:
       - redis-network
       - monitoring-network
@@ -23,11 +22,8 @@ services:
       - 'traefik.http.routers.canary.rule=Host(`${DROPLET_IP}`)'
       - 'traefik.http.services.canary.loadbalancer.server.port=${APP_PORT}'
       - 'traefik.http.routers.canary.middlewares=canary-splitter'
-      - 'traefik.http.middlewares.canary-splitter.traffic.weight.services.canary.weight=${CANARY_WEIGHT}'
-      - 'traefik.http.middlewares.canary-splitter.traffic.weight.services.app.weight=80'
       - 'traefik.http.routers.canary.entrypoints=web'
 
-  # Traefik reverse proxy for canary deployment
   traefik:
     image: traefik:v2.8
     command:
@@ -40,7 +36,7 @@ services:
       - '--log.level=DEBUG'
     ports:
       - '80:80'
-      - '8080:8080' # Traefik dashboard
+      - '8080:8080'
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik/traefik.yml:/opt/app/traefik/traefik.yml:ro
@@ -48,8 +44,12 @@ services:
       - redis-network
       - monitoring-network
     restart: unless-stopped
-    profiles:
-      - production
+    labels:
+      - 'traefik.http.middlewares.canary-splitter.traffic.split.rule=Host(`${DROPLET_IP}`)'
+      - 'traefik.http.middlewares.canary-splitter.traffic.split.service=app'
+      - 'traefik.http.middlewares.canary-splitter.traffic.split.service=canary'
+      - 'traefik.http.middlewares.canary-splitter.traffic.split.weights.canary=${CANARY_WEIGHT}'
+      - 'traefik.http.middlewares.canary-splitter.traffic.split.weights.app=$((100-${CANARY_WEIGHT}))'
 
 networks:
   redis-network:
