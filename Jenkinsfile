@@ -139,7 +139,6 @@ pipeline {
                                     --build-arg BUILD_NUMBER=${env.BUILD_NUMBER} \
                                     --build-arg GIT_COMMIT=${env.GIT_COMMIT} \
                                     -t ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG} \
-                                    --target production \
                                     .
                             """
                             
