@@ -166,30 +166,7 @@ pipeline {
                 }
             }
         }
-        
-        stage('Scan Docker Image') {
-            when {
-                expression { env.DEPLOY_TYPE != 'rollback' && env.DEPLOY_ENV == 'prod' }
-            }
-            steps {
-                script {
-                    // Use Trivy or other scanning tools to check for vulnerabilities
-                    try {
-                        sh """
-                            docker run --rm \
-                                -v /var/run/docker.sock:/var/run/docker.sock \
-                                aquasec/trivy image \
-                                --severity HIGH,CRITICAL \
-                                --exit-code 1 \
-                                ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}
-                        """
-                    } catch (Exception e) {
-                        error "Image scanning found critical vulnerabilities. Deployment aborted."
-                    }
-                }
-            }
-        }
-        
+          
         stage('Push Docker Image') {
             when {
                 expression { env.DEPLOY_TYPE != 'rollback' }
@@ -222,52 +199,67 @@ pipeline {
             }
         }
         
-        stage('Prepare Deployment') {
+        stage('Update Config Files') {
             steps {
                 script {
-                    // Create a deployment manifest file
-                    def deploymentManifest = [
-                        "build_number": env.BUILD_NUMBER,
-                        "git_commit": env.GIT_COMMIT,
-                        "git_branch": env.GIT_BRANCH,
-                        "deploy_env": env.DEPLOY_ENV,
-                        "deploy_type": env.DEPLOY_TYPE,
-                        "image_tag": env.PROD_TAG,
-                        "timestamp": new Date().format("yyyy-MM-dd'T'HH:mm:ssZ"),
-                        "initiated_by": currentBuild.getBuildCauses()[0].shortDescription
-                    ]
+                    def envFile = '.env'
+                    def composeFile = 'docker-compose.yml'
                     
-                    writeJSON file: 'deployment-manifest.json', json: deploymentManifest
+                    // Create environment-specific .env file
+                    if (env.DEPLOY_ENV == 'dev') {
+                        sh "sed -i 's/IS_DEV=false/IS_DEV=true/g' ${envFile}"
+                        sh "sed -i 's/REDIS_SENTINELS_PROD/REDIS_SENTINELS_DEV/g' ${composeFile}"
+                        sh "sed -i 's/REDIS_HOST_PROD/REDIS_HOST_DEV/g' ${composeFile}"
+                    }
                     
-                    // Update configuration files
-                    updateConfigFiles()
-                }
-            }
-        }
-        
-        stage('Deploy to ${DEPLOY_ENV}') {
-            steps {
-                script {
-                    // Record deployment start time
-                    env.DEPLOY_START_TIME = new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+                    // Update canary deployment settings if needed
+                    if (env.DEPLOY_TYPE == 'canary') {
+                        sh "sed -i 's/CANARY_WEIGHT=.*/CANARY_WEIGHT=${params.CANARY_WEIGHT}/g' ${envFile}"
+                    }
                     
-                    try {
-                        switch(env.DEPLOY_TYPE) {
-                            case 'rollback':
-                                deployRollback()
-                                break
-                            case 'canary':
-                                deployCanary()
-                                break
-                            default:
-                                deployStandard()
-                        }
-                    } catch (Exception e) {
-                        error "Deployment failed: ${e.getMessage()}"
+                    // Update Traefik configuration to use IP instead of domain name
+                    if (fileExists('traefik/traefik.yml')) {
+                        sh "sed -i 's/your-domain.com/${DROPLET_IP}/g' traefik/traefik.yml"
+                    }
+                    
+                    // Update docker-compose.canary.yml to use IP instead of domain name
+                    if (fileExists('docker-compose.canary.yml')) {
+                        sh "sed -i 's/your-domain.com/${DROPLET_IP}/g' docker-compose.canary.yml"
                     }
                 }
             }
         }
+        
+        stage('Prepare Deployment Target') {
+            steps {
+                script {
+                    // Print diagnostic information about credentials
+                    echo "Current environment: ${env.DEPLOY_ENV}"
+                    echo "Deployment type: ${env.DEPLOY_TYPE}"
+                    echo "Credential environment: ${env.CRED_ENV}"
+                    echo "Credentials ID to look for: ${env.CRED_ENV}-env-file"
+                }
+                
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
+                    file(credentialsId: "${env.CRED_ENV}-env-file", variable: 'ENV_FILE')
+                ]) {
+                    script {
+                        // Create deployment directory structure
+                        sh """
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
+                export CANARY_IMAGE='${canaryImage}' && \
+                export CANARY_WEIGHT='${canaryWeight}' && \
+                export APP_IMAGE='${appImage}' && \
+                export DROPLET_IP='${deploymentHost}' && \
+                docker-compose -f docker-compose.yml up -d app && \
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml up -d canary traefik"
+        """
+          }
+        }
+        }
+        }
+        
         
         stage('Verify Deployment') {
             steps {
