@@ -94,7 +94,10 @@ pipeline {
                         echo "Error determining build cause: ${e.getMessage()}"
                     }
                     
-                    if (branch == 'main' && env.DEPLOY_TYPE == 'standard' && isTriggerFromGitHub) {
+                    // Get branch name from environment variables again for safety
+                    def currentBranch = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceAll('origin/', '')
+                    
+                    if (currentBranch == 'main' && env.DEPLOY_TYPE == 'standard' && isTriggerFromGitHub) {
                         env.DEPLOY_TYPE = 'canary'
                         echo "Auto-detected prod deployment from GitHub push. Using canary deployment for safety."
                     }
