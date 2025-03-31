@@ -1,133 +1,294 @@
 pipeline {
     agent any
     
-    parameters {
-        choice(name: 'ENVIRONMENT', choices: ['staging', 'canary', 'production'], description: 'Deployment environment')
-        string(name: 'PROMOTION_REASON', defaultValue: '', description: 'Reason for promoting canary to stable (only for canary promotion)')
-        booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip running tests')
+    environment {
+        DOCKER_REGISTRY = "prathibhabotcalm" // Your Docker Hub username
+        APP_IMAGE_NAME = "nextjs-app"
+        APP_VERSION = "${env.BUILD_NUMBER}"
+        GIT_COMMIT_SHORT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+        PROD_TAG = "${GIT_COMMIT_SHORT}-${env.BUILD_NUMBER}"
+        CANARY_TAG = "${GIT_COMMIT_SHORT}-${env.BUILD_NUMBER}-canary"
+        CANARY_WEIGHT = "${params.CANARY_WEIGHT ?: 20}" // Default to 20% traffic if not specified
+        DEPLOY_TIMEOUT = 600 // 10 minutes timeout for deployment validation
+        DROPLET_IP = "128.199.87.188" // Your Digital Ocean droplet IP
     }
     
-    environment {
-        DOCKER_REGISTRY = 'ghcr.io'
-        DOCKER_REPO = "${DOCKER_REGISTRY}/${env.GIT_URL.tokenize('/')[-2].toLowerCase()}/${env.GIT_URL.tokenize('/')[-1].toLowerCase().replace('.git', '')}"
-        CANARY_WEIGHT = 20
-        APP_PORT = 3000
-        NODE_ENV = "${params.ENVIRONMENT == 'staging' ? 'development' : 'production'}"
+    parameters {
+        choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'prod'], description: 'Deployment environment')
+        choice(name: 'DEPLOYMENT_TYPE', choices: ['standard', 'canary', 'rollback'], description: 'Deployment type')
+        string(name: 'CANARY_WEIGHT', defaultValue: '20', description: 'Percentage of traffic to route to canary (1-99)')
+        string(name: 'ROLLBACK_VERSION', defaultValue: '', description: 'Version to rollback to (required for rollback)')
     }
     
     stages {
+        stage('Validate Parameters') {
+            steps {
+                script {
+                    if (params.DEPLOYMENT_TYPE == 'rollback' && params.ROLLBACK_VERSION == '') {
+                        error "Rollback version is required for rollback deployment type"
+                    }
+                    
+                    if (params.DEPLOYMENT_TYPE == 'canary') {
+                        def canaryWeight = params.CANARY_WEIGHT.toInteger()
+                        if (canaryWeight < 1 || canaryWeight > 99) {
+                            error "Canary weight must be between 1 and 99"
+                        }
+                    }
+                }
+            }
+        }
+        
         stage('Checkout') {
             steps {
                 checkout scm
             }
         }
         
-        stage('Setup Environment Variables') {
+        stage('Unit Tests') {
             steps {
-                script {
-                    // Load environment variables based on selected environment
-                    if (params.ENVIRONMENT == 'staging') {
-                        // Load staging environment variables
-                        withCredentials([file(credentialsId: 'staging-env-file', variable: 'ENV_FILE')]) {
-                            def envContent = readFile(file: "${ENV_FILE}")
-                            def envMap = parseEnvFile(envContent)
-                            envMap.each { key, value ->
-                                env."${key}" = value
-                            }
-                        }
-                    } else {
-                        // Load production/canary environment variables
-                        withCredentials([file(credentialsId: 'production-env-file', variable: 'ENV_FILE')]) {
-                            def envContent = readFile(file: "${ENV_FILE}")
-                            def envMap = parseEnvFile(envContent)
-                            envMap.each { key, value ->
-                                env."${key}" = value
-                            }
-                        }
-                    }
-                }
+                sh 'npm ci'
+                sh 'npm test'
             }
         }
         
         stage('Build Docker Image') {
+            when {
+                expression { params.DEPLOYMENT_TYPE != 'rollback' }
+            }
             steps {
+                sh "docker build -t ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG} ."
+                
                 script {
-                    def imageTag
-                    def additionalTag = ''
-                    
-                    switch(params.ENVIRONMENT) {
-                        case 'staging':
-                            imageTag = 'staging-latest'
-                            break
-                        case 'canary':
-                        case 'production':
-                            imageTag = 'live-latest'
-                            additionalTag = "live-${env.GIT_COMMIT}"
-                            break
-                        default:
-                            error "Unknown environment: ${params.ENVIRONMENT}"
+                    if (params.DEPLOYMENT_TYPE == 'canary') {
+                        sh "docker tag ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG} ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
                     }
-                    
-                    // Login to GHCR
-                    withCredentials([usernamePassword(credentialsId: 'github-credentials', usernameVariable: 'GITHUB_USER', passwordVariable: 'GITHUB_TOKEN')]) {
-                        sh "echo '${GITHUB_TOKEN}' | docker login ${DOCKER_REGISTRY} -u ${GITHUB_USER} --password-stdin"
-                    }
-                    
-                    // Set up buildx (for better caching)
-                    sh "docker buildx create --use --driver docker-container --buildkitd-flags '--debug'"
-                    
-                    // Build and push Docker image
-                    def buildArgs = [
-                        "--cache-from", "type=registry,ref=${DOCKER_REPO}:${imageTag}",
-                        "--cache-to", "type=inline",
-                        "-t", "${DOCKER_REPO}:${imageTag}",
-                        "."
-                    ]
-                    
-                    if (additionalTag) {
-                        buildArgs.add("-t")
-                        buildArgs.add("${DOCKER_REPO}:${additionalTag}")
-                    }
-                    
-                    sh "docker buildx build --push ${buildArgs.join(' ')}"
                 }
             }
         }
         
+        stage('Push Docker Image') {
+            when {
+                expression { params.DEPLOYMENT_TYPE != 'rollback' }
+            }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'docker-registry-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASSWORD')]) {
+                    sh "echo ${DOCKER_PASSWORD} | docker login -u ${DOCKER_USER} --password-stdin"
+                    sh "docker push ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
+                    
+                    script {
+                        if (params.DEPLOYMENT_TYPE == 'canary') {
+                            sh "docker push ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Update Config Files') {
+            steps {
+                script {
+                    def envFile = '.env'
+                    def composeFile = 'docker-compose.yml'
+                    
+                    // Create environment-specific .env file
+                    if (params.ENVIRONMENT == 'dev') {
+                        sh "sed -i 's/IS_DEV=false/IS_DEV=true/g' ${envFile}"
+                        sh "sed -i 's/REDIS_SENTINELS_PROD/REDIS_SENTINELS_DEV/g' ${composeFile}"
+                        sh "sed -i 's/REDIS_HOST_PROD/REDIS_HOST_DEV/g' ${composeFile}"
+                    }
+                    
+                    // Update canary deployment settings if needed
+                    if (params.DEPLOYMENT_TYPE == 'canary') {
+                        sh "sed -i 's/CANARY_WEIGHT=.*/CANARY_WEIGHT=${params.CANARY_WEIGHT}/g' ${envFile}"
+                    }
+                    
+                    // Update Traefik configuration to use IP instead of domain name
+                    if (fileExists('traefik/traefik.yml')) {
+                        sh "sed -i 's/your-domain.com/${DROPLET_IP}/g' traefik/traefik.yml"
+                    }
+                    
+                    // Update docker-compose.canary.yml to use IP instead of domain name
+                    if (fileExists('docker-compose.canary.yml')) {
+                        sh "sed -i 's/your-domain.com/${DROPLET_IP}/g' docker-compose.canary.yml"
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy Application') {
+            steps {
+                script {
+                    if (params.DEPLOYMENT_TYPE == 'rollback') {
+                        deployRollback()
+                    } else if (params.DEPLOYMENT_TYPE == 'canary') {
+                        deployCanary()
+                    } else {
+                        deployStandard()
+                    }
+                }
+            }
+        }
+        
+        stage('Health Check') {
+            steps {
+                script {
+                    def healthCheckPort = params.ENVIRONMENT == 'prod' ? 3000 : 3000
+                    def healthCheckPath = "/api/health"
+                    def healthCheckUrl = "http://${DROPLET_IP}:${healthCheckPort}${healthCheckPath}"
+                    
+                    echo "Checking health at: ${healthCheckUrl}"
+                    
+                    def healthCheckAttempts = 0
+                    def maxAttempts = 10
+                    def healthCheckSuccess = false
+                    
+                    while (!healthCheckSuccess && healthCheckAttempts < maxAttempts) {
+                        try {
+                            def response = sh(script: "curl -s -o /dev/null -w '%{http_code}' ${healthCheckUrl}", returnStdout: true).trim()
+                            if (response == "200") {
+                                echo "Health check succeeded"
+                                healthCheckSuccess = true
+                            } else {
+                                echo "Health check failed with response: ${response}, retrying..."
+                                healthCheckAttempts++
+                                sleep 15 // Wait 15 seconds before next attempt
+                            }
+                        } catch (Exception e) {
+                            echo "Health check failed with exception: ${e.getMessage()}, retrying..."
+                            healthCheckAttempts++
+                            sleep 15
+                        }
+                    }
+                    
+                    if (!healthCheckSuccess) {
+                        error "Health check failed after ${maxAttempts} attempts"
+                    }
+                }
+            }
+        }
+        
+        stage('Promote Canary') {
+            when {
+                expression { params.DEPLOYMENT_TYPE == 'canary' }
+            }
+            steps {
+                timeout(time: DEPLOY_TIMEOUT, unit: 'SECONDS') {
+                    input message: "Canary deployment is serving ${params.CANARY_WEIGHT}% of traffic. Promote to 100%?", ok: 'Promote'
+                }
+                
+                script {
+                    promoteCanary()
+                }
+            }
+        }
+        
+        stage('Cleanup') {
+            steps {
+                script {
+                    if (params.DEPLOYMENT_TYPE == 'canary') {
+                        sh "docker rmi ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG} || true"
+                    }
+                    
+                    // Clean up old images to save disk space - keep the last 5 builds
+                    sh """
+                        docker images ${DOCKER_REGISTRY}/${APP_IMAGE_NAME} --format '{{.Repository}}:{{.Tag}}' | 
+                        sort -r | 
+                        awk 'NR>5' | 
+                        xargs -r docker rmi || true
+                    """
+                }
+            }
+        }
     }
     
     post {
-        always {
-            // Cleanup workspace
-            cleanWs()
-        }
-        success {
-            echo "Pipeline completed successfully!"
-        }
         failure {
-            echo "Pipeline failed! Check the logs for details."
+            script {
+                if (params.DEPLOYMENT_TYPE == 'canary') {
+                    echo "Canary deployment failed, rolling back"
+                    rollbackCanary()
+                }
+            }
         }
     }
 }
 
-// Helper function to parse .env file content into a map
-def parseEnvFile(String content) {
-    def map = [:]
-    content.split('\n').each { line ->
-        line = line.trim()
-        if (line && !line.startsWith('#')) {
-            def matcher = line =~ /([^=]+)=(.+)/
-            if (matcher.matches()) {
-                def key = matcher.group(1).trim()
-                def value = matcher.group(2).trim()
-                // Remove quotes if present
-                if ((value.startsWith('"') && value.endsWith('"')) || 
-                    (value.startsWith("'") && value.endsWith("'"))) {
-                    value = value.substring(1, value.length() - 1)
-                }
-                map[key] = value
-            }
-        }
+// Helper functions for deployment strategies
+def deployStandard() {
+    withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+        def deploymentHost = env.DROPLET_IP
+        
+        sh """
+            ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
+                cd /opt/app && \
+                echo 'APP_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}' > .env.deployment && \
+                docker-compose pull app && \
+                docker-compose up -d app
+            "
+        """
     }
-    return map
+}
+
+def deployCanary() {
+    withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+        def deploymentHost = env.DROPLET_IP
+        
+        // First deploy canary instance
+        sh """
+            ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
+                cd /opt/app && \
+                echo 'CANARY_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}' >> .env.deployment && \
+                echo 'CANARY_WEIGHT=${params.CANARY_WEIGHT}' >> .env.deployment && \
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml up -d canary traefik
+            "
+        """
+    }
+}
+
+def promoteCanary() {
+    withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+        def deploymentHost = env.DROPLET_IP
+        
+        // Update the production service to use the canary image
+        sh """
+            ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
+                cd /opt/app && \
+                echo 'APP_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}' > .env.deployment && \
+                docker-compose pull app && \
+                docker-compose up -d app && \
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary && \
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary
+            "
+        """
+    }
+}
+
+def rollbackCanary() {
+    withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+        def deploymentHost = env.DROPLET_IP
+        
+        // Remove canary instances and revert to stable
+        sh """
+            ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
+                cd /opt/app && \
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary && \
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary
+            "
+        """
+    }
+}
+
+def deployRollback() {
+    withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+        def deploymentHost = env.DROPLET_IP
+        
+        sh """
+            ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
+                cd /opt/app && \
+                echo 'APP_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${params.ROLLBACK_VERSION}' > .env.deployment && \
+                docker-compose pull app && \
+                docker-compose up -d app
+            "
+        """
+    }
 }

@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  # Canary version of the app service
+  canary:
+    image: ${CANARY_IMAGE}
+    ports:
+      - '3001:${APP_PORT}'  # Exposed on a different port
+    volumes:
+      - app-logs:/app/logs
+    networks:
+      - redis-network
+      - monitoring-network
+    restart: unless-stopped
+    environment:
+      - LOG_PATH=/app
+      - TEMP_DIR=/tmp/app-logs
+      - CANARY_DEPLOYMENT=true
+      - CANARY_WEIGHT=${CANARY_WEIGHT}
+    env_file:
+      - .env
+      - .env.deployment
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.canary.rule=Host(`your-domain.com`)"
+      - "traefik.http.services.canary.loadbalancer.server.port=${APP_PORT}"
+      - "traefik.http.routers.canary.middlewares=canary-splitter"
+      - "traefik.http.middlewares.canary-splitter.traffic.weight.services.canary.weight=${CANARY_WEIGHT}"
+      - "traefik.http.middlewares.canary-splitter.traffic.weight.services.app.weight=$((100-CANARY_WEIGHT))"
+
+  # Traefik reverse proxy for canary deployment
+  traefik:
+    image: traefik:v2.8
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/traefik.yml:ro
+      - ./traefik/acme.json:/acme.json
+    networks:
+      - redis-network
+      - monitoring-network
+    restart: unless-stopped
+    profiles:
+      - production
+      - development
+      - canary
+
+networks:
+  redis-network:
+    external: true
+  monitoring-network:
+    external: true
+
+volumes:
+  app-logs:
+    external: true
