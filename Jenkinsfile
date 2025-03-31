@@ -11,6 +11,7 @@ pipeline {
         CANARY_WEIGHT = "${params.CANARY_WEIGHT ?: 20}" // Default to 20% traffic if not specified
         DEPLOY_TIMEOUT = 600 // 10 minutes timeout for deployment validation
         DROPLET_IP = "128.199.87.188" // Your Digital Ocean droplet IP
+        DEPLOYMENT_DIR = "/opt/app" // Deployment directory
     }
     
     parameters {
@@ -49,11 +50,19 @@ pipeline {
                 expression { params.DEPLOYMENT_TYPE != 'rollback' }
             }
             steps {
-                sh "docker build -t ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG} ."
-                
                 script {
-                    if (params.DEPLOYMENT_TYPE == 'canary') {
-                        sh "docker tag ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG} ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
+                    try {
+                        sh "docker build -t ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG} ."
+                        
+                        if (params.DEPLOYMENT_TYPE == 'canary') {
+                            sh "docker tag ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG} ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
+                        }
+                    } catch (Exception e) {
+                        echo "Error building Docker image: ${e.getMessage()}"
+                        echo "Checking if Docker is installed..."
+                        sh "which docker || echo 'Docker not found'"
+                        sh "id | grep docker || echo 'User not in docker group'"
+                        throw e
                     }
                 }
             }
@@ -103,6 +112,32 @@ pipeline {
                     // Update docker-compose.canary.yml to use IP instead of domain name
                     if (fileExists('docker-compose.canary.yml')) {
                         sh "sed -i 's/your-domain.com/${DROPLET_IP}/g' docker-compose.canary.yml"
+                    }
+                }
+            }
+        }
+        
+        stage('Prepare Deployment Target') {
+            steps {
+                withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+                    script {
+                        def deploymentHost = env.DROPLET_IP
+                        
+                        // Create deployment directory and required subdirectories
+                        sh """
+                            ssh -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
+                                mkdir -p ${env.DEPLOYMENT_DIR} && \
+                                mkdir -p ${env.DEPLOYMENT_DIR}/traefik
+                            "
+                        """
+                        
+                        // Copy necessary files to deployment target
+                        sh """
+                            scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no docker-compose.yml ${SSH_USER}@${deploymentHost}:${env.DEPLOYMENT_DIR}/
+                            scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no docker-compose.canary.yml ${SSH_USER}@${deploymentHost}:${env.DEPLOYMENT_DIR}/
+                            scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no .env ${SSH_USER}@${deploymentHost}:${env.DEPLOYMENT_DIR}/
+                            scp -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no traefik/traefik.yml ${SSH_USER}@${deploymentHost}:${env.DEPLOYMENT_DIR}/traefik/
+                        """
                     }
                 }
             }
@@ -203,6 +238,9 @@ pipeline {
                 }
             }
         }
+        success {
+            echo "Deployment successful!"
+        }
     }
 }
 
@@ -211,12 +249,13 @@ def deployStandard() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
         def deploymentHost = env.DROPLET_IP
         
+        // Deploy standard instance
         sh """
-            ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
-                cd /opt/app && \
+            ssh -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
+                cd ${env.DEPLOYMENT_DIR} && \
                 echo 'APP_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}' > .env.deployment && \
                 docker-compose pull app && \
-                docker-compose up --profile production -d app
+                docker-compose --profile production up -d app
             "
         """
     }
@@ -228,8 +267,8 @@ def deployCanary() {
         
         // First deploy canary instance
         sh """
-            ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
-                cd /opt/app && \
+            ssh -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
+                cd ${env.DEPLOYMENT_DIR} && \
                 echo 'CANARY_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}' >> .env.deployment && \
                 echo 'CANARY_WEIGHT=${params.CANARY_WEIGHT}' >> .env.deployment && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml --profile production up -d canary traefik
@@ -244,11 +283,11 @@ def promoteCanary() {
         
         // Update the production service to use the canary image
         sh """
-            ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
-                cd /opt/app && \
+            ssh -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
+                cd ${env.DEPLOYMENT_DIR} && \
                 echo 'APP_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}' > .env.deployment && \
                 docker-compose pull app && \
-                docker-compose up -d app && \
+                docker-compose --profile production up -d app && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary && \
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary
             "
@@ -262,10 +301,10 @@ def rollbackCanary() {
         
         // Remove canary instances and revert to stable
         sh """
-            ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
-                cd /opt/app && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary
+            ssh -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
+                cd ${env.DEPLOYMENT_DIR} && \
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary || true && \
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true
             "
         """
     }
@@ -276,11 +315,11 @@ def deployRollback() {
         def deploymentHost = env.DROPLET_IP
         
         sh """
-            ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
-                cd /opt/app && \
+            ssh -i \"${SSH_KEY}\" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "
+                cd ${env.DEPLOYMENT_DIR} && \
                 echo 'APP_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${params.ROLLBACK_VERSION}' > .env.deployment && \
                 docker-compose pull app && \
-                docker-compose up --profile production -d app
+                docker-compose --profile production up -d app
             "
         """
     }
