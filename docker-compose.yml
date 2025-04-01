@@ -29,7 +29,7 @@ services:
     profiles:
       - production
   app:
-    image: ${APP_IMAGE}
+    image: ${APP_IMAGE:-prathibhabotcalm/nextjs-app:latest}
     container_name: app-app-1
     ports:
       - '3000:${APP_PORT}'
@@ -41,14 +41,14 @@ services:
     env_file:
       - .env
       - .env.deployment
+    environment:
+      - APP_IMAGE=${APP_IMAGE}
+      - CANARY_IMAGE=${CANARY_IMAGE}
+      - CANARY_WEIGHT=${CANARY_WEIGHT:-0}
+      - DROPLET_IP=${DROPLET_IP}
+      - APP_PORT=${APP_PORT:-3000}
     labels:
       - "com.example.service=app-stable"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${APP_PORT}/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
     profiles:
       - production
 
@@ -65,12 +65,6 @@ services:
     env_file:
       - .env
       - .env.deployment
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${APP_PORT}/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
     labels:
       - "com.example.service=app-canary"
     profiles:

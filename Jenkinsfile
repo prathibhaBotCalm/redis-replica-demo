@@ -1100,7 +1100,9 @@ pipeline {
                             
                             # Copy Nginx configuration
                             if [ -d "nginx" ]; then
-                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no nginx/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/nginx/
+                                scp -i \$SSH_KEY -o StrictHostKeyChecking=no nginx/nginx.conf \${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/nginx/
+                                ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/nginx/conf.d"
+                                scp -i \$SSH_KEY -o StrictHostKeyChecking=no nginx/conf.d/* \${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/nginx/conf.d/ || true
                             fi
                             
                             # Copy scripts
@@ -1367,63 +1369,98 @@ def promoteCanary() {
     }
 }
 
+// def rollbackCanary() {
+//     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+//         def deploymentHost = env.DROPLET_IP
+        
+//         sh """
+//             # Stop canary and set weight to 0
+//             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
+//                 echo 'CANARY_WEIGHT=0';
+//                 echo 'DROPLET_IP=${deploymentHost}';
+//             } > .env.deployment"
+            
+//             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+//                 docker-compose stop app-canary && \\
+//                 docker-compose rm -f app-canary && \\
+//                 docker-compose up -d nginx"
+//         """
+//     }
+// }
 def rollbackCanary() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-        def deploymentHost = env.DROPLET_IP
-        
         sh """
-            # Stop canary and set weight to 0
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
+            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${DROPLET_IP} "cd ${DEPLOYMENT_DIR} && {
+                echo 'APP_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}';
                 echo 'CANARY_WEIGHT=0';
-                echo 'DROPLET_IP=${deploymentHost}';
+                echo 'DROPLET_IP=${DROPLET_IP}';
+                echo 'APP_PORT=3000';
             } > .env.deployment"
             
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${DROPLET_IP} "cd ${DEPLOYMENT_DIR} && \\
                 docker-compose stop app-canary && \\
                 docker-compose rm -f app-canary && \\
-                docker-compose up -d nginx"
+                docker-compose --profile production up -d"
         """
     }
 }
 
+// def deployCanary() {
+//     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+//         def deploymentHost = env.DROPLET_IP
+//         def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
+//         def canaryWeight = params.CANARY_WEIGHT
+//         def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
+        
+//         sh """
+//             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
+//                 echo 'APP_IMAGE=${appImage}';
+//                 echo 'CANARY_IMAGE=${canaryImage}';
+//                 echo 'CANARY_WEIGHT=${canaryWeight}';
+//                 echo 'DROPLET_IP=${deploymentHost}';
+//                 echo 'APP_PORT=3000';
+//             } > .env.deployment"
+            
+//             # Deploy infrastructure first
+//             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+//                 docker-compose pull && \\
+//                 docker-compose up -d redis-master redis-slave-1 redis-slave-2 redis-slave-3 redis-slave-4 \\
+//                 sentinel-1 sentinel-2 sentinel-3 redis-backup \\
+//                 prometheus grafana cadvisor \\
+//                 redis-exporter-master redis-exporter-slave1 redis-exporter-slave2 redis-exporter-slave3 redis-exporter-slave4"
+                
+//             # Wait for Redis to be ready (existing code)
+            
+//             # Deploy both stable and canary versions
+//             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+//                 docker-compose up -d app app-canary"
+                
+//             # Deploy Nginx with canary weight
+//             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+//                 docker-compose up -d nginx"
+                
+//             # Verify deployment
+//             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+//                 docker ps && \\
+//                 docker logs nginx"
+//         """
+//     }
+// }
 def deployCanary() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-        def deploymentHost = env.DROPLET_IP
-        def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
-        def canaryWeight = params.CANARY_WEIGHT
-        def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
-        
         sh """
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
-                echo 'APP_IMAGE=${appImage}';
-                echo 'CANARY_IMAGE=${canaryImage}';
-                echo 'CANARY_WEIGHT=${canaryWeight}';
-                echo 'DROPLET_IP=${deploymentHost}';
+            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${DROPLET_IP} "cd ${DEPLOYMENT_DIR} && {
+                echo 'APP_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}';
+                echo 'CANARY_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}';
+                echo 'CANARY_WEIGHT=${params.CANARY_WEIGHT}';
+                echo 'DROPLET_IP=${DROPLET_IP}';
                 echo 'APP_PORT=3000';
             } > .env.deployment"
             
-            # Deploy infrastructure first
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+            # Deploy the services
+            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${DROPLET_IP} "cd ${DEPLOYMENT_DIR} && \\
                 docker-compose pull && \\
-                docker-compose up -d redis-master redis-slave-1 redis-slave-2 redis-slave-3 redis-slave-4 \\
-                sentinel-1 sentinel-2 sentinel-3 redis-backup \\
-                prometheus grafana cadvisor \\
-                redis-exporter-master redis-exporter-slave1 redis-exporter-slave2 redis-exporter-slave3 redis-exporter-slave4"
-                
-            # Wait for Redis to be ready (existing code)
-            
-            # Deploy both stable and canary versions
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
-                docker-compose up -d app app-canary"
-                
-            # Deploy Nginx with canary weight
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
-                docker-compose up -d nginx"
-                
-            # Verify deployment
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
-                docker ps && \\
-                docker logs nginx"
+                docker-compose --profile production up -d"
         """
     }
 }
