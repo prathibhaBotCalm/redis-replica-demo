@@ -7,6 +7,7 @@ networks:
 services:
   app:
     image: ${APP_IMAGE}
+    container_name: app-app-1
     ports:
       - '3000:${APP_PORT}'
     networks:
@@ -15,15 +16,16 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+      - .env.deployment
     labels:
       - 'traefik.enable=true'
-      # Define service with specific name that matches the middleware reference
-      - 'traefik.http.services.app-service.loadbalancer.server.port=${APP_PORT}'
+      - 'traefik.http.services.app.loadbalancer.server.port=${APP_PORT}'
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${APP_PORT}/api/health"]
-      interval: 10s
-      timeout: 5s
+      interval: 30s
+      timeout: 10s
       retries: 3
+      start_period: 40s
 
   redis-master:
     image: redis/redis-stack:latest

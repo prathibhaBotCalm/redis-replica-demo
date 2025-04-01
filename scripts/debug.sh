@@ -1,57 +1,37 @@
 #!/bin/bash
 
-echo "===== Traefik Debugging Script ====="
-echo "Checking Docker containers..."
-docker ps
+# Deploy with simplified setup first
+echo "===== Deploying with simplified configuration ====="
+docker-compose -f docker-compose.yml down
+docker-compose -f docker-compose.yml up -d app
 
-echo -e "\n===== Checking networks ====="
-docker network ls | grep -E 'redis-network|monitoring-network'
+echo "===== Waiting 30 seconds for app to initialize ====="
+sleep 30
 
-echo -e "\n===== Network inspection - redis-network ====="
-docker network inspect redis-network
+echo "===== Deploying Traefik ====="
+docker-compose -f docker-compose.yml -f docker-compose.canary.yml up -d traefik
 
-echo -e "\n===== Network inspection - monitoring-network ====="
-docker network inspect monitoring-network
+echo "===== Checking if app is healthy ====="
+docker ps | grep app-app
 
-echo -e "\n===== Traefik logs ====="
-TRAEFIK_CONTAINER=$(docker ps -q -f name=traefik)
-if [ -n "$TRAEFIK_CONTAINER" ]; then
-  docker logs $TRAEFIK_CONTAINER | tail -50
-else
-  echo "Traefik container not found!"
-fi
+echo "===== Checking Traefik logs ====="
+docker logs app-traefik-1
 
-echo -e "\n===== Checking Traefik providers ====="
-if [ -n "$TRAEFIK_CONTAINER" ]; then
-  echo "Checking Docker provider..."
-  curl -s http://localhost:8080/api/rawdata | jq . || echo "jq not installed, showing raw output" && curl -s http://localhost:8080/api/rawdata
-else
-  echo "Traefik container not found!"
-fi
+echo "===== Testing direct access to app ====="
+curl -v http://localhost:3000
 
-echo -e "\n===== Testing connections ====="
-echo "Testing connection to app on port 3000..."
-curl -v -H "Host: ${DROPLET_IP}" http://localhost:3000 2>&1 | head -20
+echo "===== Testing access through Traefik ====="
+curl -v http://localhost:80
 
-echo -e "\nTesting connection to app on port 80..."
-curl -v -H "Host: ${DROPLET_IP}" http://localhost 2>&1 | head -20
+echo "===== Viewing Traefik router configuration ====="
+curl -s http://localhost:8080/api/http/routers | jq .
 
-echo -e "\n===== Checking IP resolution ====="
-echo "Your machine resolves ${DROPLET_IP} to:"
-ping -c 1 ${DROPLET_IP} || echo "Cannot ping ${DROPLET_IP}"
+echo "===== Viewing Traefik services configuration ====="
+curl -s http://localhost:8080/api/http/services | jq .
 
-echo -e "\n===== Checking .env file ====="
-echo "Contents of .env (redacting sensitive info):"
-grep -v "PASSWORD\|SECRET\|KEY" .env || echo ".env file not found"
+echo "===== Checking environment variables ====="
+docker exec app-app-1 env | grep APP_PORT
+docker exec app-traefik-1 env | grep DROPLET
 
-echo -e "\n===== Checking .env.deployment file ====="
-echo "Contents of .env.deployment (redacting sensitive info):"
-grep -v "PASSWORD\|SECRET\|KEY" .env.deployment || echo ".env.deployment file not found"
-
-echo -e "\n===== Checking if APP_PORT is properly set ====="
-APP_PORT=$(grep APP_PORT .env 2>/dev/null || echo "APP_PORT not found in .env")
-echo $APP_PORT
-APP_PORT_DEPLOYMENT=$(grep APP_PORT .env.deployment 2>/dev/null || echo "APP_PORT not found in .env.deployment")
-echo $APP_PORT_DEPLOYMENT
-
-echo "===== End of Debugging Info ====="
+echo "===== Testing direct container communication ====="
+docker exec app-traefik-1 wget -q -O- app-app-1:3000 || echo "Failed to connect directly"

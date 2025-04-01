@@ -3,6 +3,7 @@ version: '3.8'
 services:
   canary:
     image: ${CANARY_IMAGE}
+    container_name: app-canary-1
     ports:
       - '3001:${APP_PORT}'
     networks:
@@ -19,12 +20,11 @@ services:
       - .env.deployment
     labels:
       - 'traefik.enable=true'
-      # Define canary service
-      - 'traefik.http.services.canary-service.loadbalancer.server.port=${APP_PORT}'
-      # We won't use a separate router for canary - it will be accessed via the weighted service
+      - 'traefik.http.services.canary.loadbalancer.server.port=${APP_PORT}'
 
   traefik:
     image: traefik:v2.8
+    container_name: app-traefik-1
     command:
       - '--api.insecure=true'
       - '--providers.docker=true'
@@ -44,17 +44,14 @@ services:
     restart: unless-stopped
     labels:
       - 'traefik.enable=true'
-      # Define the middleware for canary traffic splitting
-      - 'traefik.http.middlewares.canary-splitter.weighted.services[0].name=app-service'
-      - 'traefik.http.middlewares.canary-splitter.weighted.services[0].weight=${STABLE_WEIGHT:-80}'
-      - 'traefik.http.middlewares.canary-splitter.weighted.services[1].name=canary-service'
-      - 'traefik.http.middlewares.canary-splitter.weighted.services[1].weight=${CANARY_WEIGHT:-20}'
-      
-      # Create the main router - use a catch-all pattern instead of Host rule to start
-      - 'traefik.http.routers.main-router.rule=PathPrefix(`/`)'
-      - 'traefik.http.routers.main-router.entrypoints=web'
-      - 'traefik.http.routers.main-router.middlewares=canary-splitter'
-      - 'traefik.http.routers.main-router.priority=1'
+      # Create default router for port 80 that catches everything
+      - 'traefik.http.routers.default.rule=PathPrefix(`/`)'
+      - 'traefik.http.routers.default.entrypoints=web'
+      # Set up service for direct forwarding to app container
+      - 'traefik.http.services.traefik.loadbalancer.server.port=80'
+      # Set up the direct forwarding to app container's port
+      - 'traefik.http.services.appservice.loadbalancer.server.url=http://app-app-1:${APP_PORT}'
+      - 'traefik.http.routers.default.service=appservice'
 
 networks:
   redis-network:
