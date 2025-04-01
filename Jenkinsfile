@@ -617,22 +617,94 @@ def rollbackCanary() {
 }
 
 
+// def deployCanary() {
+//     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+//         sh """
+//             ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${DROPLET_IP} "cd ${DEPLOYMENT_DIR} && {
+//                 echo 'APP_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}';
+//                 echo 'CANARY_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}';
+//                 echo 'CANARY_WEIGHT=${params.CANARY_WEIGHT}';
+//                 echo 'DROPLET_IP=${DROPLET_IP}';
+//                 echo 'APP_PORT=3000';
+//             } > .env"
+            
+//             # Deploy the services with the environment file
+//             ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${DROPLET_IP} "cd ${DEPLOYMENT_DIR} && \\
+//                 export \$(grep -v '^#' .env | xargs) && \\
+//                 docker-compose --env-file .env pull && \\
+//                 docker-compose --env-file .env --profile production up -d"
+//         """
+//     }
+// }
 def deployCanary() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+        def deploymentHost = env.DROPLET_IP
+        def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
+        def canaryWeight = params.CANARY_WEIGHT
+        def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
+        
         sh """
-            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${DROPLET_IP} "cd ${DEPLOYMENT_DIR} && {
-                echo 'APP_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}';
-                echo 'CANARY_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}';
-                echo 'CANARY_WEIGHT=${params.CANARY_WEIGHT}';
-                echo 'DROPLET_IP=${DROPLET_IP}';
+            # Create environment file
+            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${deploymentHost} "cd ${DEPLOYMENT_DIR} && {
+                echo 'APP_IMAGE=${appImage}';
+                echo 'CANARY_IMAGE=${canaryImage}';
+                echo 'CANARY_WEIGHT=${canaryWeight}';
+                echo 'DROPLET_IP=${deploymentHost}';
                 echo 'APP_PORT=3000';
             } > .env"
             
-            # Deploy the services with the environment file
-            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${DROPLET_IP} "cd ${DEPLOYMENT_DIR} && \\
+            # First deploy the infrastructure services (Redis, monitoring, etc.)
+            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${deploymentHost} "cd ${DEPLOYMENT_DIR} && \\
                 export \$(grep -v '^#' .env | xargs) && \\
                 docker-compose --env-file .env pull && \\
-                docker-compose --env-file .env --profile production up -d"
+                docker-compose --env-file .env up -d redis-master redis-slave-1 redis-slave-2 redis-slave-3 redis-slave-4 \\
+                sentinel-1 sentinel-2 sentinel-3 redis-backup \\
+                prometheus grafana cadvisor \\
+                redis-exporter-master redis-exporter-slave1 redis-exporter-slave2 redis-exporter-slave3 redis-exporter-slave4"
+                
+            # Wait for Redis infrastructure to be ready
+            echo "Waiting for Redis infrastructure to be ready..."
+            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${deploymentHost} "cd ${DEPLOYMENT_DIR} && \\
+                attempt=0; \\
+                max_attempts=${params.REDIS_MAX_ATTEMPTS ?: 50}; \\
+                sleep_duration=${params.REDIS_SLEEP_DURATION ?: 5}; \\
+                echo 'Checking Redis readiness with max_attempts='\$max_attempts', sleep_duration='\$sleep_duration; \\
+                until [ \$attempt -ge \$max_attempts ]; do \\
+                    attempt=\$((attempt+1)); \\
+                    echo 'Waiting for Redis to be ready... ('\$attempt'/'\$max_attempts')'; \\
+                    if docker ps | grep -q redis-master && \\
+                       docker exec -i \$(docker ps -q -f name=redis-master) redis-cli PING 2>/dev/null | grep -q 'PONG'; then \\
+                        echo 'Redis is now ready!'; \\
+                        break; \\
+                    fi; \\
+                    if [ \$attempt -ge \$max_attempts ]; then \\
+                        echo 'Redis infrastructure did not become ready in time, but proceeding with deployment anyway'; \\
+                    fi; \\
+                    sleep \$sleep_duration; \\
+                done"
+                
+            # Start Nginx first
+            echo "Starting Nginx first..."
+            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${deploymentHost} "cd ${DEPLOYMENT_DIR} && \\
+                export \$(grep -v '^#' .env | xargs) && \\
+                docker-compose --env-file .env up -d nginx"
+
+            # Then deploy the stable app
+            echo "Deploying stable app..."
+            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${deploymentHost} "cd ${DEPLOYMENT_DIR} && \\
+                export \$(grep -v '^#' .env | xargs) && \\
+                docker-compose --env-file .env up -d app"
+
+            # Now deploy the canary
+            echo "Deploying canary..."
+            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${deploymentHost} "cd ${DEPLOYMENT_DIR} && \\
+                export \$(grep -v '^#' .env | xargs) && \\
+                docker-compose --env-file .env up -d app-canary"
+                
+            # Check Nginx logs to diagnose any routing issues
+            echo "Checking Nginx logs for routing information..."
+            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${deploymentHost} "cd ${DEPLOYMENT_DIR} && \\
+                docker logs \$(docker ps -q -f name=nginx) | tail -50"
         """
     }
 }
