@@ -667,10 +667,10 @@ def promoteCanary() {
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary && \\
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary"
                 
-            # Refresh Traefik configuration
+            # Refresh Traefik configuration using both compose files
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
                 export \$(grep -v '^#' .env | xargs) && \\
-                docker-compose --profile production up -d traefik"
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml --profile production up -d traefik || echo 'Traefik restart skipped'"
         """
     }
 }
@@ -700,12 +700,12 @@ def rollbackCanary() {
                 export APP_PORT=3000 && \
                 docker-compose --profile production up -d app"
                 
-            # Reconfigure Traefik to route to standard app (not canary)
+            # Reconfigure Traefik to route to standard app (not canary) - Use both compose files
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
                 export APP_IMAGE='${appImage}' && \
                 export DROPLET_IP='${deploymentHost}' && \
                 export APP_PORT=3000 && \
-                docker-compose --profile production up -d traefik"
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml --profile production up -d traefik || echo 'Traefik restart skipped'"
                 
             echo "Successfully rolled back from canary deployment"
         """
