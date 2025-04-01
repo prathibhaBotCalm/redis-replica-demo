@@ -21,8 +21,8 @@ services:
       - 'traefik.enable=true'
       - 'traefik.http.routers.canary.rule=Host(`${DROPLET_IP}`)'
       - 'traefik.http.services.canary.loadbalancer.server.port=${APP_PORT}'
-      - 'traefik.http.routers.canary.middlewares=canary-splitter'
       - 'traefik.http.routers.canary.entrypoints=web'
+      - 'traefik.http.routers.canary.service=canary'
 
   traefik:
     image: traefik:v2.8
@@ -45,11 +45,10 @@ services:
       - monitoring-network
     restart: unless-stopped
     labels:
-      - 'traefik.http.middlewares.canary-splitter.traffic.split.rule=Host(`${DROPLET_IP}`)'
       - 'traefik.http.middlewares.canary-splitter.traffic.split.service=app'
       - 'traefik.http.middlewares.canary-splitter.traffic.split.service=canary'
-      - 'traefik.http.middlewares.canary-splitter.traffic.split.weights.canary=${CANARY_WEIGHT}'
-      - 'traefik.http.middlewares.canary-splitter.traffic.split.weights.app=$((100-${CANARY_WEIGHT}))'
+      - 'traefik.http.middlewares.canary-splitter.traffic.split.terminating=true'
+      - 'traefik.http.routers.app.middlewares=canary-splitter@docker'
 
 networks:
   redis-network:

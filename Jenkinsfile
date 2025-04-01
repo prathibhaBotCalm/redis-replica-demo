@@ -638,36 +638,6 @@ def deployCanary() {
     }
 }
 
-// def promoteCanary() {
-//     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-//         def deploymentHost = env.DROPLET_IP
-//         def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
-//         def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
-        
-//         // Update the main app to use the canary image (promotion)
-//         sh """
-//             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
-//                 echo 'APP_IMAGE=${canaryImage}';
-//                 echo 'DROPLET_IP=${deploymentHost}';
-//                 echo 'DEPLOY_TYPE=standard';
-//             } > .env.deployment"
-            
-//             # Stop the canary containers explicitly by container name to avoid env var issues
-//             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-//                 docker stop app-canary-1 app-traefik-1 || true && \
-//                 docker rm app-canary-1 app-traefik-1 || true"
-            
-//             # Restart the main app with the canary image
-//             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-//                 export APP_IMAGE='${canaryImage}' && \
-//                 export DROPLET_IP='${deploymentHost}' && \
-//                 export APP_PORT=3000 && \
-//                 docker-compose --profile production up -d app --remove-orphans"
-                
-//             echo "Canary deployment successfully promoted to production"
-//         """
-//     }
-// }
 def promoteCanary() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
         def deploymentHost = env.DROPLET_IP
@@ -708,32 +678,6 @@ def promoteCanary() {
     }
 }
 
-// def rollbackCanary() {
-//     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-//         def deploymentHost = env.DROPLET_IP
-//         def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
-        
-//         // Stop and remove the canary service, keeping the original app running
-//         sh """
-//             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
-//                 echo 'APP_IMAGE=${appImage}';
-//                 echo 'DROPLET_IP=${deploymentHost}';
-//             } > .env.deployment"
-            
-//             # Stop containers by name to avoid env var issues
-//             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-//                 docker stop app-canary-1 app-traefik-1 || true && \
-//                 docker rm app-canary-1 app-traefik-1 || true"
-            
-//             # Ensure the main app is still running with the stable image
-//             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-//                 export APP_IMAGE='${appImage}' && \
-//                 export DROPLET_IP='${deploymentHost}' && \
-//                 export APP_PORT=3000 && \
-//                 docker-compose --profile production up -d app --remove-orphans"
-//         """
-//     }
-// }
 def rollbackCanary() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
         def deploymentHost = env.DROPLET_IP

@@ -8,7 +8,7 @@ services:
   app:
     image: ${APP_IMAGE}
     ports:
-      - '${APP_PORT}:${APP_PORT}'
+      - '3000:${APP_PORT}'
     networks:
       - redis-network
       - monitoring-network
@@ -20,6 +20,7 @@ services:
       - 'traefik.http.routers.app.rule=Host(`${DROPLET_IP}`)'
       - 'traefik.http.services.app.loadbalancer.server.port=${APP_PORT}'
       - 'traefik.http.routers.app.entrypoints=web'
+      - 'traefik.http.routers.app.service=app'
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${APP_PORT}/api/health"]
       interval: 10s
@@ -414,34 +415,6 @@ services:
     restart: unless-stopped
     profiles:
       - production
-
-# Add to docker-compose.yml
-  traefik:
-    image: traefik:v2.8
-    command:
-      - '--api.insecure=true'
-      - '--providers.docker=true'
-      - '--providers.docker.exposedbydefault=false'
-      - '--entrypoints.web.address=:80'
-      - '--entrypoints.web-secure.address=:443'
-      - '--providers.docker.network=monitoring-network'
-      - '--accesslog=true'
-      - '--log.level=DEBUG'
-    ports:
-      - '80:80'
-      - '443:443'
-      - '8080:8080' # Traefik dashboard
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./traefik/traefik.yml:/opt/app/traefik/traefik.yml:ro
-    networks:
-      - redis-network
-      - monitoring-network
-    restart: unless-stopped
-    profiles:
-      - production
-      - development
-      - canary
 
 volumes:
   redis-data:
