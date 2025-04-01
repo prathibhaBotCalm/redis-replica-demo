@@ -17,9 +17,8 @@ services:
       - .env
     labels:
       - 'traefik.enable=true'
-      - 'traefik.http.routers.app.rule=Host(`${DROPLET_IP}`)'
-      - 'traefik.http.services.app.loadbalancer.server.port=${APP_PORT}'
-      - 'traefik.http.routers.app.entrypoints=web'
+      # Define service with specific name that matches the middleware reference
+      - 'traefik.http.services.app-service.loadbalancer.server.port=${APP_PORT}'
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${APP_PORT}/api/health"]
       interval: 10s

@@ -19,11 +19,9 @@ services:
       - .env.deployment
     labels:
       - 'traefik.enable=true'
-      - 'traefik.http.routers.canary.rule=Host(`${DROPLET_IP}`)'
-      - 'traefik.http.services.canary.loadbalancer.server.port=${APP_PORT}'
-      - 'traefik.http.routers.canary.entrypoints=web'
-      # Add a unique path for canary to avoid rule conflicts with main app
-      - 'traefik.http.routers.canary.priority=2'
+      # Define canary service
+      - 'traefik.http.services.canary-service.loadbalancer.server.port=${APP_PORT}'
+      # We won't use a separate router for canary - it will be accessed via the weighted service
 
   traefik:
     image: traefik:v2.8
@@ -46,17 +44,17 @@ services:
     restart: unless-stopped
     labels:
       - 'traefik.enable=true'
-      # Properly define the weighted service middleware
-      - 'traefik.http.middlewares.canary-splitter.weighted.services[0].name=app'
+      # Define the middleware for canary traffic splitting
+      - 'traefik.http.middlewares.canary-splitter.weighted.services[0].name=app-service'
       - 'traefik.http.middlewares.canary-splitter.weighted.services[0].weight=${STABLE_WEIGHT:-80}'
-      - 'traefik.http.middlewares.canary-splitter.weighted.services[1].name=canary'
+      - 'traefik.http.middlewares.canary-splitter.weighted.services[1].name=canary-service'
       - 'traefik.http.middlewares.canary-splitter.weighted.services[1].weight=${CANARY_WEIGHT:-20}'
-      # Apply the middleware to the main entrypoint router
-      - 'traefik.http.routers.main.rule=Host(`${DROPLET_IP}`)'
-      - 'traefik.http.routers.main.entrypoints=web'
-      - 'traefik.http.routers.main.middlewares=canary-splitter'
-      - 'traefik.http.routers.main.service=app@docker'
-      - 'traefik.http.routers.main.priority=1'
+      
+      # Create the main router - use a catch-all pattern instead of Host rule to start
+      - 'traefik.http.routers.main-router.rule=PathPrefix(`/`)'
+      - 'traefik.http.routers.main-router.entrypoints=web'
+      - 'traefik.http.routers.main-router.middlewares=canary-splitter'
+      - 'traefik.http.routers.main-router.priority=1'
 
 networks:
   redis-network:
