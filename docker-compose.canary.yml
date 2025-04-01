@@ -22,7 +22,6 @@ services:
       - 'traefik.http.routers.canary.rule=Host(`${DROPLET_IP}`)'
       - 'traefik.http.services.canary.loadbalancer.server.port=${APP_PORT}'
       - 'traefik.http.routers.canary.entrypoints=web'
-      - 'traefik.http.routers.canary.service=canary'
 
   traefik:
     image: traefik:v2.8
@@ -39,15 +38,16 @@ services:
       - '8080:8080'
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./traefik/traefik.yml:/opt/app/traefik/traefik.yml:ro
     networks:
       - redis-network
       - monitoring-network
     restart: unless-stopped
     labels:
-      - 'traefik.http.middlewares.canary-splitter.traffic.split.service=app'
-      - 'traefik.http.middlewares.canary-splitter.traffic.split.service=canary'
-      - 'traefik.http.middlewares.canary-splitter.traffic.split.terminating=true'
+      - 'traefik.enable=true'
+      - 'traefik.http.middlewares.canary-splitter.service.weighted.services[0].name=app'
+      - 'traefik.http.middlewares.canary-splitter.service.weighted.services[0].weight=${STABLE_WEIGHT:-80}'
+      - 'traefik.http.middlewares.canary-splitter.service.weighted.services[1].name=canary'
+      - 'traefik.http.middlewares.canary-splitter.service.weighted.services[1].weight=${CANARY_WEIGHT:-20}'
       - 'traefik.http.routers.app.middlewares=canary-splitter@docker'
 
 networks:

@@ -5,8 +5,6 @@ http:
       service: "app"
       entryPoints:
         - "web"
-      middlewares:
-        - "canary-splitter"
 
     canary:
       rule: "Host(`${DROPLET_IP}`)"
@@ -27,9 +25,11 @@ http:
 
   middlewares:
     canary-splitter:
-      trafficSplit:
-        services:
-          - name: "app"
-            weight: $((100-${CANARY_WEIGHT}))
-          - name: "canary"
-            weight: ${CANARY_WEIGHT}
+      plugin:
+        trafficSplit:
+          service1:
+            service: "app"
+            weight: 80
+          service2:
+            service: "canary"
+            weight: 20
