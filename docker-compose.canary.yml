@@ -21,6 +21,8 @@ services:
     labels:
       - 'traefik.enable=true'
       - 'traefik.http.services.canary.loadbalancer.server.port=${APP_PORT}'
+      - 'traefik.http.routers.canary.entrypoints=web'
+      - 'traefik.http.routers.canary.rule=Host(`${DROPLET_IP}`)'
 
   traefik:
     image: traefik:v2.8
@@ -44,14 +46,11 @@ services:
     restart: unless-stopped
     labels:
       - 'traefik.enable=true'
-      # Create default router for port 80 that catches everything
-      - 'traefik.http.routers.default.rule=PathPrefix(`/`)'
-      - 'traefik.http.routers.default.entrypoints=web'
-      # Set up service for direct forwarding to app container
-      - 'traefik.http.services.traefik.loadbalancer.server.port=80'
-      # Set up the direct forwarding to app container's port
-      - 'traefik.http.services.appservice.loadbalancer.server.url=http://app-app-1:${APP_PORT}'
-      - 'traefik.http.routers.default.service=appservice'
+      # Forward all traffic to app container directly
+      - 'traefik.http.routers.catch-all.rule=PathPrefix(`/`)'
+      - 'traefik.http.routers.catch-all.entrypoints=web'
+      - 'traefik.http.routers.catch-all.service=app@docker'
+      - 'traefik.http.routers.catch-all.priority=1'
 
 networks:
   redis-network:
