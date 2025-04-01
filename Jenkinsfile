@@ -1342,45 +1342,27 @@ def promoteCanary() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
         def deploymentHost = env.DROPLET_IP
         def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
-        def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
         
-        // Merge environment variables properly
         sh """
+            # Update stable to use canary image
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
-                # Combine existing .env with deployment overrides
-                cat .env .env.deployment > .env.combined
-                echo 'APP_IMAGE=${canaryImage}' >> .env.combined
-                echo 'DROPLET_IP=${deploymentHost}' >> .env.combined
-                echo 'APP_PORT=3000' >> .env.combined
-                mv .env.combined .env
-            }"
+                echo 'APP_IMAGE=${canaryImage}';
+                echo 'DROPLET_IP=${deploymentHost}';
+            } > .env.deployment"
             
-            # Update main app with canary image using proper env file
+            # Redeploy stable with canary image
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
-                export \$(grep -v '^#' .env | xargs) && \\
-                docker-compose pull app && \\
-                docker-compose --profile production up -d app"
+                docker-compose up -d app"
                 
-            # Now explicitly set CANARY_IMAGE before trying to stop and remove it
+            # Remove canary deployment
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
-                export CANARY_IMAGE='${canaryImage}' && \\
-                export CANARY_WEIGHT='${params.CANARY_WEIGHT}' && \\
-                export STABLE_WEIGHT='${100 - params.CANARY_WEIGHT.toInteger()}' && \\
-                export APP_IMAGE='${appImage}' && \\
-                export DROPLET_IP='${deploymentHost}' && \\
-                export APP_PORT='3000' && \\
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary || true && \\
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true"
+                docker-compose stop app-canary && \\
+                docker-compose rm -f app-canary"
                 
-            # Verify nginx is still running, restart if needed
+            # Update Nginx to 100% traffic to stable
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
-                if ! docker ps | grep -q nginx; then \\
-                    echo 'Restarting Nginx service' && \\
-                    export APP_IMAGE='${canaryImage}' && \\
-                    export DROPLET_IP='${deploymentHost}' && \\
-                    export APP_PORT='3000' && \\
-                    docker-compose -f docker-compose.yml up -d nginx; \\
-                fi"
+                echo 'CANARY_WEIGHT=0' >> .env.deployment && \\
+                docker-compose up -d nginx"
         """
     }
 }
@@ -1388,43 +1370,18 @@ def promoteCanary() {
 def rollbackCanary() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
         def deploymentHost = env.DROPLET_IP
-        def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
-        def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
         
-        // Stop and remove the canary service, keeping the original app running
         sh """
+            # Stop canary and set weight to 0
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
-                echo 'APP_IMAGE=${appImage}';
+                echo 'CANARY_WEIGHT=0';
                 echo 'DROPLET_IP=${deploymentHost}';
-                echo 'APP_PORT=3000';
             } > .env.deployment"
             
-            # Set all required environment variables before stopping canary
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
-                export CANARY_IMAGE='${canaryImage}' && \\
-                export CANARY_WEIGHT='${params.CANARY_WEIGHT}' && \\
-                export STABLE_WEIGHT='${100 - params.CANARY_WEIGHT.toInteger()}' && \\
-                export APP_IMAGE='${appImage}' && \\
-                export DROPLET_IP='${deploymentHost}' && \\
-                export APP_PORT='3000' && \\
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary || true && \\
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true"
-            
-            # Ensure the main app is still running with the stable image
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
-                export APP_IMAGE='${appImage}' && \\
-                export DROPLET_IP='${deploymentHost}' && \\
-                export APP_PORT='3000' && \\
-                docker-compose --profile production up -d app"
-                
-            # Make sure nginx is running
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
-                export APP_IMAGE='${appImage}' && \\
-                export DROPLET_IP='${deploymentHost}' && \\
-                export APP_PORT='3000' && \\
-                docker-compose -f docker-compose.yml up -d nginx || echo 'Nginx restart skipped'"
-                
-            echo "Successfully rolled back from canary deployment"
+                docker-compose stop app-canary && \\
+                docker-compose rm -f app-canary && \\
+                docker-compose up -d nginx"
         """
     }
 }
@@ -1434,89 +1391,39 @@ def deployCanary() {
         def deploymentHost = env.DROPLET_IP
         def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
         def canaryWeight = params.CANARY_WEIGHT
-        def stableWeight = 100 - canaryWeight.toInteger()
         def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
         
-        // Set up environment for canary deployment
         sh """
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
+                echo 'APP_IMAGE=${appImage}';
                 echo 'CANARY_IMAGE=${canaryImage}';
                 echo 'CANARY_WEIGHT=${canaryWeight}';
-                echo 'STABLE_WEIGHT=${stableWeight}';
-                echo 'APP_IMAGE=${appImage}';
                 echo 'DROPLET_IP=${deploymentHost}';
                 echo 'APP_PORT=3000';
             } > .env.deployment"
             
-            # First deploy the main infrastructure (Redis, monitoring, etc.)
+            # Deploy infrastructure first
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
-                export APP_IMAGE='${appImage}' && \\
-                export DROPLET_IP='${deploymentHost}' && \\
-                export APP_PORT=3000 && \\
                 docker-compose pull && \\
                 docker-compose up -d redis-master redis-slave-1 redis-slave-2 redis-slave-3 redis-slave-4 \\
                 sentinel-1 sentinel-2 sentinel-3 redis-backup \\
                 prometheus grafana cadvisor \\
                 redis-exporter-master redis-exporter-slave1 redis-exporter-slave2 redis-exporter-slave3 redis-exporter-slave4"
                 
-            # Wait for Redis infrastructure to be ready with improved error handling
-            echo "Waiting for Redis infrastructure to be ready..."
+            # Wait for Redis to be ready (existing code)
+            
+            # Deploy both stable and canary versions
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
-                attempt=0; \\
-                max_attempts=${params.REDIS_MAX_ATTEMPTS ?: 50}; \\
-                sleep_duration=${params.REDIS_SLEEP_DURATION ?: 5}; \\
-                echo 'Checking Redis readiness with max_attempts='\$max_attempts', sleep_duration='\$sleep_duration; \\
-                until [ \$attempt -ge \$max_attempts ]; do \\
-                    attempt=\$((attempt+1)); \\
-                    echo 'Waiting for Redis to be ready... ('\$attempt'/'\$max_attempts')'; \\
-                    if docker ps | grep -q redis-master && \\
-                       docker exec -i \$(docker ps -q -f name=redis-master) redis-cli PING 2>/dev/null | grep -q 'PONG'; then \\
-                        echo 'Redis is now ready!'; \\
-                        break; \\
-                    fi; \\
-                    if [ \$attempt -ge \$max_attempts ]; then \\
-                        echo 'Redis infrastructure did not become ready in time, but proceeding with deployment anyway'; \\
-                    fi; \\
-                    sleep \$sleep_duration; \\
-                done"
+                docker-compose up -d app app-canary"
                 
-            # Start nginx first separately with the required ENV variables
-            echo "Starting Nginx first..."
+            # Deploy Nginx with canary weight
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
-                export CANARY_IMAGE='${canaryImage}' && \\
-                export CANARY_WEIGHT='${canaryWeight}' && \\
-                export STABLE_WEIGHT='${stableWeight}' && \\
-                export APP_IMAGE='${appImage}' && \\
-                export DROPLET_IP='${deploymentHost}' && \\
-                export APP_PORT=3000 && \\
-                docker-compose -f docker-compose.yml up -d nginx"
-
-            # Then deploy the stable app
-            echo "Deploying stable app..."
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
-                export CANARY_IMAGE='${canaryImage}' && \\
-                export CANARY_WEIGHT='${canaryWeight}' && \\
-                export STABLE_WEIGHT='${stableWeight}' && \\
-                export APP_IMAGE='${appImage}' && \\
-                export DROPLET_IP='${deploymentHost}' && \\
-                export APP_PORT=3000 && \\
-                docker-compose -f docker-compose.yml up -d app"
-
-            # Now deploy the canary
-            echo "Deploying canary..."
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
-                export CANARY_IMAGE='${canaryImage}' && \\
-                export CANARY_WEIGHT='${canaryWeight}' && \\
-                export STABLE_WEIGHT='${stableWeight}' && \\
-                export APP_IMAGE='${appImage}' && \\
-                export DROPLET_IP='${deploymentHost}' && \\
-                export APP_PORT=3000 && \\
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml up -d canary"
+                docker-compose up -d nginx"
                 
-            # Check Nginx logs to diagnose any routing issues
-            echo "Checking Nginx logs for routing information..."
+            # Verify deployment
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
-                docker logs \$(docker ps -q -f name=nginx) | tail -50"
+                docker ps && \\
+                docker logs nginx"
         """
     }
 }

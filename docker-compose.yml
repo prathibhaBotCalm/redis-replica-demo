@@ -3,8 +3,31 @@ networks:
     driver: bridge
   monitoring-network:
     driver: bridge
+  frontend-network:
+    driver: bridge
 
 services:
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      - ./nginx/logs:/var/log/nginx
+    networks:
+      - frontend-network
+    restart: unless-stopped
+    depends_on:
+      - app
+      - app-canary
+    environment:
+      - CANARY_WEIGHT=${CANARY_WEIGHT:-20}
+    profiles:
+      - production
   app:
     image: ${APP_IMAGE}
     container_name: app-app-1
@@ -13,19 +36,45 @@ services:
     networks:
       - redis-network
       - monitoring-network
+      - frontend-network
     restart: unless-stopped
     env_file:
       - .env
       - .env.deployment
     labels:
-      - 'traefik.enable=true'
-      - 'traefik.http.services.app.loadbalancer.server.port=${APP_PORT}'
+      - "com.example.service=app-stable"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${APP_PORT}/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
+    profiles:
+      - production
+
+  app-canary:
+    image: ${CANARY_IMAGE}
+    container_name: app-canary
+    expose:
+      - '${APP_PORT}'
+    networks:
+      - redis-network
+      - monitoring-network
+      - frontend-network
+    restart: unless-stopped
+    env_file:
+      - .env
+      - .env.deployment
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${APP_PORT}/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      - "com.example.service=app-canary"
+    profiles:
+      - production
 
   redis-master:
     image: redis/redis-stack:latest
