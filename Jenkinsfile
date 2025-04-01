@@ -644,36 +644,33 @@ def promoteCanary() {
         def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
         def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
         
-        // Update the main app to use the canary image (promotion)
+        // Merge environment variables properly
         sh """
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
-                echo 'APP_IMAGE=${canaryImage}';
-                echo 'DROPLET_IP=${deploymentHost}';
-                echo 'APP_PORT=3000';
-                echo 'DEPLOY_TYPE=standard';
-            } > .env.deployment"
+                # Combine existing .env with deployment overrides
+                cat .env .env.deployment > .env.combined
+                echo 'APP_IMAGE=${canaryImage}' >> .env.combined
+                echo 'DROPLET_IP=${deploymentHost}' >> .env.combined
+                echo 'APP_PORT=3000' >> .env.combined
+                mv .env.combined .env
+            }"
             
-            # First update the main app with the canary image
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                export APP_IMAGE='${canaryImage}' && \
-                export DROPLET_IP='${deploymentHost}' && \
-                export APP_PORT=3000 && \
-                docker-compose pull app && \
+            # Update main app with canary image using proper env file
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export \$(grep -v '^#' .env | xargs) && \\
+                docker-compose pull app && \\
                 docker-compose --profile production up -d app"
                 
-            # Now we can safely stop the canary service
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary && \
+            # Stop and remove canary service
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export \$(grep -v '^#' .env | xargs) && \\
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary && \\
                 docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary"
                 
-            # Ensure Traefik is properly configured and running with standard routing
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                export APP_IMAGE='${canaryImage}' && \
-                export DROPLET_IP='${deploymentHost}' && \
-                export APP_PORT=3000 && \
+            # Refresh Traefik configuration
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export \$(grep -v '^#' .env | xargs) && \\
                 docker-compose --profile production up -d traefik"
-                
-            echo "Canary deployment successfully promoted to production"
         """
     }
 }
