@@ -22,6 +22,8 @@ services:
       - 'traefik.http.routers.canary.rule=Host(`${DROPLET_IP}`)'
       - 'traefik.http.services.canary.loadbalancer.server.port=${APP_PORT}'
       - 'traefik.http.routers.canary.entrypoints=web'
+      # Add a unique path for canary to avoid rule conflicts with main app
+      - 'traefik.http.routers.canary.priority=2'
 
   traefik:
     image: traefik:v2.8
@@ -44,11 +46,17 @@ services:
     restart: unless-stopped
     labels:
       - 'traefik.enable=true'
-      - 'traefik.http.middlewares.canary-splitter.service.weighted.services[0].name=app'
-      - 'traefik.http.middlewares.canary-splitter.service.weighted.services[0].weight=${STABLE_WEIGHT:-80}'
-      - 'traefik.http.middlewares.canary-splitter.service.weighted.services[1].name=canary'
-      - 'traefik.http.middlewares.canary-splitter.service.weighted.services[1].weight=${CANARY_WEIGHT:-20}'
-      - 'traefik.http.routers.app.middlewares=canary-splitter@docker'
+      # Properly define the weighted service middleware
+      - 'traefik.http.middlewares.canary-splitter.weighted.services[0].name=app'
+      - 'traefik.http.middlewares.canary-splitter.weighted.services[0].weight=${STABLE_WEIGHT:-80}'
+      - 'traefik.http.middlewares.canary-splitter.weighted.services[1].name=canary'
+      - 'traefik.http.middlewares.canary-splitter.weighted.services[1].weight=${CANARY_WEIGHT:-20}'
+      # Apply the middleware to the main entrypoint router
+      - 'traefik.http.routers.main.rule=Host(`${DROPLET_IP}`)'
+      - 'traefik.http.routers.main.entrypoints=web'
+      - 'traefik.http.routers.main.middlewares=canary-splitter'
+      - 'traefik.http.routers.main.service=app@docker'
+      - 'traefik.http.routers.main.priority=1'
 
 networks:
   redis-network:
