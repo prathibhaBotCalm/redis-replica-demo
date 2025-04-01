@@ -617,25 +617,6 @@ def rollbackCanary() {
 }
 
 
-// def deployCanary() {
-//     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-//         sh """
-//             ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${DROPLET_IP} "cd ${DEPLOYMENT_DIR} && {
-//                 echo 'APP_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}';
-//                 echo 'CANARY_IMAGE=${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}';
-//                 echo 'CANARY_WEIGHT=${params.CANARY_WEIGHT}';
-//                 echo 'DROPLET_IP=${DROPLET_IP}';
-//                 echo 'APP_PORT=3000';
-//             } > .env"
-            
-//             # Deploy the services with the environment file
-//             ssh -i \$SSH_KEY -o StrictHostKeyChecking=no \${SSH_USER}@${DROPLET_IP} "cd ${DEPLOYMENT_DIR} && \\
-//                 export \$(grep -v '^#' .env | xargs) && \\
-//                 docker-compose --env-file .env pull && \\
-//                 docker-compose --env-file .env --profile production up -d"
-//         """
-//     }
-// }
 def deployCanary() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
         def deploymentHost = env.DROPLET_IP
@@ -649,7 +630,9 @@ def deployCanary() {
                 echo 'APP_IMAGE=${appImage}';
                 echo 'CANARY_IMAGE=${canaryImage}';
                 echo 'CANARY_WEIGHT=${canaryWeight}';
+                echo 'NGINX_CANARY_WEIGHT=${params.CANARY_WEIGHT}';
                 echo 'DROPLET_IP=${deploymentHost}';
+                echo 'NGINX_HOST=${DROPLET_IP}';
                 echo 'APP_PORT=3000';
             } > .env"
             
