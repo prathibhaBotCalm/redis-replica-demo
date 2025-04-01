@@ -460,7 +460,7 @@ pipeline {
                         echo "Automated deployment from GitHub push. Monitoring canary for issues..."
                         
                         // Sleep for a monitoring period for the canary
-                        def monitoringMinutes = 5
+                        def monitoringMinutes = 1
                         echo "Monitoring canary deployment for ${monitoringMinutes} minutes..."
                         sleep(time: monitoringMinutes, unit: 'MINUTES')
                         
@@ -566,105 +566,49 @@ def deployStandard() {
     }
 }
 
-def deployCanary() {
-    withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
-        def deploymentHost = env.DROPLET_IP
-        def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
-        def canaryWeight = params.CANARY_WEIGHT
-        def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
-        
-        // Set up environment for canary deployment
-        sh """
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
-                echo 'CANARY_IMAGE=${canaryImage}';
-                echo 'CANARY_WEIGHT=${canaryWeight}';
-                echo 'APP_IMAGE=${appImage}';
-                echo 'DROPLET_IP=${deploymentHost}';
-                echo 'APP_PORT=3000';
-            } > .env.deployment"
-            
-            # First deploy the main infrastructure (Redis, monitoring, etc.)
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                export APP_IMAGE='${appImage}' && \
-                export DROPLET_IP='${deploymentHost}' && \
-                export APP_PORT=3000 && \
-                docker-compose pull && \
-                docker-compose up -d redis-master redis-slave-1 redis-slave-2 redis-slave-3 redis-slave-4 \
-                sentinel-1 sentinel-2 sentinel-3 redis-backup \
-                prometheus grafana cadvisor \
-                redis-exporter-master redis-exporter-slave1 redis-exporter-slave2 redis-exporter-slave3 redis-exporter-slave4"
-                
-            # Wait for Redis infrastructure to be ready with improved error handling
-            echo "Waiting for Redis infrastructure to be ready..."
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                attempt=0; \
-                max_attempts=${params.REDIS_MAX_ATTEMPTS ?: 50}; \
-                sleep_duration=${params.REDIS_SLEEP_DURATION ?: 5}; \
-                echo 'Checking Redis readiness with max_attempts='\$max_attempts', sleep_duration='\$sleep_duration; \
-                until [ \$attempt -ge \$max_attempts ]; do \
-                    attempt=\$((attempt+1)); \
-                    echo 'Waiting for Redis to be ready... ('\$attempt'/'\$max_attempts')'; \
-                    if docker ps | grep -q redis-master && \
-                       docker exec -i \$(docker ps -q -f name=redis-master) redis-cli PING 2>/dev/null | grep -q 'PONG'; then \
-                        echo 'Redis is now ready!'; \
-                        break; \
-                    fi; \
-                    if [ \$attempt -ge \$max_attempts ]; then \
-                        echo 'Redis infrastructure did not become ready in time, but proceeding with deployment anyway'; \
-                    fi; \
-                    sleep \$sleep_duration; \
-                done"
-                
-            # Then deploy both the stable and canary versions of the app
-            echo "Deploying stable and canary applications..."
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                export CANARY_IMAGE='${canaryImage}' && \
-                export CANARY_WEIGHT='${canaryWeight}' && \
-                export APP_IMAGE='${appImage}' && \
-                export DROPLET_IP='${deploymentHost}' && \
-                export APP_PORT=3000 && \
-                docker-compose -f docker-compose.yml up -d app"
-
-            # Now deploy the canary and traefik
-            echo "Deploying canary and Traefik..."
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                export CANARY_IMAGE='${canaryImage}' && \
-                export CANARY_WEIGHT='${canaryWeight}' && \
-                export APP_IMAGE='${appImage}' && \
-                export DROPLET_IP='${deploymentHost}' && \
-                export APP_PORT=3000 && \
-                docker-compose -f docker-compose.yml -f docker-compose.canary.yml up -d canary traefik"
-        """
-    }
-}
-
 def promoteCanary() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
         def deploymentHost = env.DROPLET_IP
         def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
         def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
         
-        // Update the main app to use the canary image (promotion)
+        // Merge environment variables properly
         sh """
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
-                echo 'APP_IMAGE=${canaryImage}';
-                echo 'DROPLET_IP=${deploymentHost}';
-                echo 'DEPLOY_TYPE=standard';
-            } > .env.deployment"
+                # Combine existing .env with deployment overrides
+                cat .env .env.deployment > .env.combined
+                echo 'APP_IMAGE=${canaryImage}' >> .env.combined
+                echo 'DROPLET_IP=${deploymentHost}' >> .env.combined
+                echo 'APP_PORT=3000' >> .env.combined
+                mv .env.combined .env
+            }"
             
-            # Stop the canary containers explicitly by container name to avoid env var issues
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                docker stop app-canary-1 app-traefik-1 || true && \
-                docker rm app-canary-1 app-traefik-1 || true"
-            
-            # Restart the main app with the canary image
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                export APP_IMAGE='${canaryImage}' && \
-                export DROPLET_IP='${deploymentHost}' && \
-                export APP_PORT=3000 && \
-                docker-compose --profile production up -d app --remove-orphans"
+            # Update main app with canary image using proper env file
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export \$(grep -v '^#' .env | xargs) && \\
+                docker-compose pull app && \\
+                docker-compose --profile production up -d app"
                 
-            echo "Canary deployment successfully promoted to production"
+            # Now explicitly set CANARY_IMAGE before trying to stop and remove it
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export CANARY_IMAGE='${canaryImage}' && \\
+                export CANARY_WEIGHT='${params.CANARY_WEIGHT}' && \\
+                export STABLE_WEIGHT='${100 - params.CANARY_WEIGHT.toInteger()}' && \\
+                export APP_IMAGE='${appImage}' && \\
+                export DROPLET_IP='${deploymentHost}' && \\
+                export APP_PORT='3000' && \\
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary || true && \\
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true"
+                
+            # Verify traefik is still running, restart if needed
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                if ! docker ps | grep -q traefik; then \\
+                    echo 'Restarting Traefik service' && \\
+                    export APP_IMAGE='${canaryImage}' && \\
+                    export DROPLET_IP='${deploymentHost}' && \\
+                    export APP_PORT='3000' && \\
+                    docker-compose -f docker-compose.yml up -d traefik; \\
+                fi"
         """
     }
 }
@@ -673,25 +617,134 @@ def rollbackCanary() {
     withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
         def deploymentHost = env.DROPLET_IP
         def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
+        def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
         
         // Stop and remove the canary service, keeping the original app running
         sh """
             ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
                 echo 'APP_IMAGE=${appImage}';
                 echo 'DROPLET_IP=${deploymentHost}';
+                echo 'APP_PORT=3000';
             } > .env.deployment"
             
-            # Stop containers by name to avoid env var issues
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                docker stop app-canary-1 app-traefik-1 || true && \
-                docker rm app-canary-1 app-traefik-1 || true"
+            # Set all required environment variables before stopping canary
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export CANARY_IMAGE='${canaryImage}' && \\
+                export CANARY_WEIGHT='${params.CANARY_WEIGHT}' && \\
+                export STABLE_WEIGHT='${100 - params.CANARY_WEIGHT.toInteger()}' && \\
+                export APP_IMAGE='${appImage}' && \\
+                export DROPLET_IP='${deploymentHost}' && \\
+                export APP_PORT='3000' && \\
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary || true && \\
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true"
             
             # Ensure the main app is still running with the stable image
-            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
-                export APP_IMAGE='${appImage}' && \
-                export DROPLET_IP='${deploymentHost}' && \
-                export APP_PORT=3000 && \
-                docker-compose --profile production up -d app --remove-orphans"
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export APP_IMAGE='${appImage}' && \\
+                export DROPLET_IP='${deploymentHost}' && \\
+                export APP_PORT='3000' && \\
+                docker-compose --profile production up -d app"
+                
+            # Make sure traefik is running
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export APP_IMAGE='${appImage}' && \\
+                export DROPLET_IP='${deploymentHost}' && \\
+                export APP_PORT='3000' && \\
+                docker-compose -f docker-compose.yml up -d traefik || echo 'Traefik restart skipped'"
+                
+            echo "Successfully rolled back from canary deployment"
+        """
+    }
+}
+
+def deployCanary() {
+    withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+        def deploymentHost = env.DROPLET_IP
+        def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
+        def canaryWeight = params.CANARY_WEIGHT
+        def stableWeight = 100 - canaryWeight.toInteger()
+        def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
+        
+        // Set up environment for canary deployment
+        sh """
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
+                echo 'CANARY_IMAGE=${canaryImage}';
+                echo 'CANARY_WEIGHT=${canaryWeight}';
+                echo 'STABLE_WEIGHT=${stableWeight}';
+                echo 'APP_IMAGE=${appImage}';
+                echo 'DROPLET_IP=${deploymentHost}';
+                echo 'APP_PORT=3000';
+            } > .env.deployment"
+            
+            # First deploy the main infrastructure (Redis, monitoring, etc.)
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export APP_IMAGE='${appImage}' && \\
+                export DROPLET_IP='${deploymentHost}' && \\
+                export APP_PORT=3000 && \\
+                docker-compose pull && \\
+                docker-compose up -d redis-master redis-slave-1 redis-slave-2 redis-slave-3 redis-slave-4 \\
+                sentinel-1 sentinel-2 sentinel-3 redis-backup \\
+                prometheus grafana cadvisor \\
+                redis-exporter-master redis-exporter-slave1 redis-exporter-slave2 redis-exporter-slave3 redis-exporter-slave4"
+                
+            # Wait for Redis infrastructure to be ready with improved error handling
+            echo "Waiting for Redis infrastructure to be ready..."
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                attempt=0; \\
+                max_attempts=${params.REDIS_MAX_ATTEMPTS ?: 50}; \\
+                sleep_duration=${params.REDIS_SLEEP_DURATION ?: 5}; \\
+                echo 'Checking Redis readiness with max_attempts='\$max_attempts', sleep_duration='\$sleep_duration; \\
+                until [ \$attempt -ge \$max_attempts ]; do \\
+                    attempt=\$((attempt+1)); \\
+                    echo 'Waiting for Redis to be ready... ('\$attempt'/'\$max_attempts')'; \\
+                    if docker ps | grep -q redis-master && \\
+                       docker exec -i \$(docker ps -q -f name=redis-master) redis-cli PING 2>/dev/null | grep -q 'PONG'; then \\
+                        echo 'Redis is now ready!'; \\
+                        break; \\
+                    fi; \\
+                    if [ \$attempt -ge \$max_attempts ]; then \\
+                        echo 'Redis infrastructure did not become ready in time, but proceeding with deployment anyway'; \\
+                    fi; \\
+                    sleep \$sleep_duration; \\
+                done"
+                
+            # Start traefik first separately with the required ENV variables
+            echo "Starting Traefik first..."
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export CANARY_IMAGE='${canaryImage}' && \\
+                export CANARY_WEIGHT='${canaryWeight}' && \\
+                export STABLE_WEIGHT='${stableWeight}' && \\
+                export APP_IMAGE='${appImage}' && \\
+                export DROPLET_IP='${deploymentHost}' && \\
+                export APP_PORT=3000 && \\
+                docker-compose -f docker-compose.yml up -d traefik"
+
+            # Then deploy the stable app
+            echo "Deploying stable app..."
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export CANARY_IMAGE='${canaryImage}' && \\
+                export CANARY_WEIGHT='${canaryWeight}' && \\
+                export STABLE_WEIGHT='${stableWeight}' && \\
+                export APP_IMAGE='${appImage}' && \\
+                export DROPLET_IP='${deploymentHost}' && \\
+                export APP_PORT=3000 && \\
+                docker-compose -f docker-compose.yml up -d app"
+
+            # Now deploy the canary
+            echo "Deploying canary..."
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export CANARY_IMAGE='${canaryImage}' && \\
+                export CANARY_WEIGHT='${canaryWeight}' && \\
+                export STABLE_WEIGHT='${stableWeight}' && \\
+                export APP_IMAGE='${appImage}' && \\
+                export DROPLET_IP='${deploymentHost}' && \\
+                export APP_PORT=3000 && \\
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml up -d canary"
+                
+            # Check Traefik logs to diagnose any routing issues
+            echo "Checking Traefik logs for routing information..."
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                docker logs \$(docker ps -q -f name=traefik) | tail -50"
         """
     }
 }
