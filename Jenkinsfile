@@ -39,8 +39,8 @@ pipeline {
         stage('Build Docker Image') {
             when {
                 anyOf {
-                    branch 'dev'
-                    branch 'feature/multi-db'
+                    branch 'main',
+                    branch 'dev',
                 }
             }
             steps {
@@ -64,7 +64,7 @@ pipeline {
                         if (env.BRANCH_NAME == 'dev') {
                             imageTag = "staging-${BUILD_VERSION}"
                             additionalTags = "--tag ${DOCKER_REGISTRY}/${REPO_NAME}:staging-latest"
-                        } else if (env.BRANCH_NAME == 'feature/multi-db') {
+                        } else if (env.BRANCH_NAME == 'main') {
                             imageTag = "live-${BUILD_VERSION}"
                             additionalTags = "--tag ${DOCKER_REGISTRY}/${REPO_NAME}:live-latest"
                         }
@@ -180,7 +180,7 @@ EOF
         
         stage('Deploy Canary to Live') {
             when {
-                branch 'feature/multi-db'
+                branch 'main'
             }
             steps {
                 script {
@@ -348,7 +348,7 @@ EOF
         
         stage('Canary Health Check') {
             when {
-                branch 'feature/multi-db'
+                branch 'main'
             }
             steps {
                 script {
@@ -387,7 +387,7 @@ EOF
         
         stage('Promote Canary') {
             when {
-                branch 'feature/multi-db'
+                branch 'main'
             }
             input {
                 message "Promote canary to stable?"
@@ -535,7 +535,7 @@ Branch: ${env.BRANCH_NAME}
         
         stage('Rollback') {
             when {
-                expression { return currentBuild.result == 'FAILURE' && env.BRANCH_NAME == 'feature/multi-db' }
+                expression { return currentBuild.result == 'FAILURE' && env.BRANCH_NAME == 'main' }
             }
             steps {
                 script {
