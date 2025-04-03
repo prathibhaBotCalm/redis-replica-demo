@@ -34,6 +34,7 @@ services:
       - app
   app:
     image: ${APP_IMAGE:-prathibhabotcalm/nextjs-app:latest}
+    container_name: app
     ports:
       - '3000:${APP_PORT}'
     networks:
@@ -52,11 +53,10 @@ services:
       - APP_PORT=${APP_PORT:-3000}
     labels:
       - "com.example.service=app-stable"
-    profiles:
-      - production
 
   app-canary:
     image: ${CANARY_IMAGE}
+    container_name: app-canary
     expose:
       - '${APP_PORT}'
     networks:
@@ -69,8 +69,6 @@ services:
       - .env.deployment
     labels:
       - "com.example.service=app-canary"
-    profiles:
-      - production
 
   redis-master:
     image: redis/redis-stack:latest
