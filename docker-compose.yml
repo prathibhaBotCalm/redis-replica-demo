@@ -4,8 +4,7 @@ networks:
   monitoring-network:
     driver: bridge
   traefik_default:
-    external: true
-
+    driver: bridge
 
 services:
   
@@ -17,6 +16,7 @@ services:
     networks:
       - redis-network
       - monitoring-network
+      - traefik_default
     restart: unless-stopped
     env_file:
       - .env
@@ -27,6 +27,13 @@ services:
       - CANARY_WEIGHT=${CANARY_WEIGHT:-0}
       - DROPLET_IP=${DROPLET_IP}
       - APP_PORT=${APP_PORT:-3000}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.app.rule=Host(`${DROPLET_IP}`) || PathPrefix(`/`)"
+      - "traefik.http.services.app.loadbalancer.server.port=${APP_PORT:-3000}"
+      - "traefik.http.services.app.loadbalancer.server.scheme=http"
+      - "traefik.docker.network=traefik_default"
+      - "traefik.http.routers.app.entrypoints=web"
 
   redis-master:
     image: redis/redis-stack:latest
