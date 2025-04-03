@@ -3,6 +3,8 @@ networks:
     driver: bridge
   monitoring-network:
     driver: bridge
+  traefik_default:
+    external: true
 
 
 services:
@@ -414,6 +416,29 @@ services:
     restart: unless-stopped
     profiles:
       - production
+
+  traefik:
+    image: traefik:v2.5
+    container_name: traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic/dynamic.yml
+      - ./traefik/acme.json:/etc/traefik/acme.json
+    networks:
+      - traefik_default
+      - redis-network
+      - monitoring-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik.rule=Host(`${DROPLET_IP}`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
+      - "traefik.http.routers.traefik.service=api@internal"
+      - "traefik.http.routers.traefik.entrypoints=web"
 
 volumes:
   redis-data:

@@ -1,0 +1,31 @@
+api:
+  dashboard: true
+  insecure: true  # For demo purposes - secure this in production
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: "traefik_default"
+  file:
+    directory: "/etc/traefik/dynamic"
+    watch: true
+
+log:
+  level: DEBUG  # Adjust to INFO in production
+
+accessLog: {}
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: "your-email@example.com"  # Replace with your email
+      storage: "/etc/traefik/acme.json"
+      httpChallenge:
+        entryPoint: "web"

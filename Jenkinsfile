@@ -2,34 +2,188 @@ pipeline {
     agent any
     
     environment {
-        // Repository configuration
-        REPO_NAME = "${env.JOB_NAME.replaceAll(/[^a-zA-Z0-9._-]/, '-')}".toLowerCase()
-        DOCKER_REGISTRY = "docker.io"
-        DOCKER_CREDENTIALS = credentials('docker-registry-credentials')
-        
-        // Environment variables
-        NODE_ENV = 'production'
-        APP_PORT = '3000'
-        
-        // SSH configuration
-        SSH_CREDENTIALS = credentials('live-ssh')
-        
-        // Build version
-        BUILD_VERSION = "${env.BUILD_NUMBER}-${env.GIT_COMMIT.take(8)}"
-        
-        // Timeouts
-        DEPLOYMENT_TIMEOUT = '10m'
-        HEALTH_CHECK_RETRIES = '5'
-        HEALTH_CHECK_DELAY = '10'
+        DOCKER_REGISTRY = "prathibhabotcalm" // Your Docker Hub username
+        APP_IMAGE_NAME = "nextjs-app"
+        APP_VERSION = "${env.BUILD_NUMBER}"
+        GIT_COMMIT_SHORT = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+        PROD_TAG = "${GIT_COMMIT_SHORT}-${env.BUILD_NUMBER}"
+        CANARY_TAG = "${GIT_COMMIT_SHORT}-${env.BUILD_NUMBER}-canary"
+        CANARY_WEIGHT = "${params.CANARY_WEIGHT ?: 20}" // Default to 20% traffic if not specified
+        DEPLOY_TIMEOUT = 600 // 10 minutes timeout for deployment validation
+        DROPLET_IP = "128.199.87.188" // Your Digital Ocean droplet IP
+        DEPLOYMENT_DIR = "/opt/app" // Deployment directory
+        DEPLOY_ENV = "${params.ENVIRONMENT ?: 'auto'}" // Will be overridden if auto-detected
+        DEPLOY_TYPE = "${params.DEPLOYMENT_TYPE ?: 'canary'}" // Default deployment type
     }
     
-    options {
-        timeout(time: 60, unit: 'MINUTES')
-        disableConcurrentBuilds()
-        buildDiscarder(logRotator(numToKeepStr: '10'))
+    parameters {
+        choice(name: 'ENVIRONMENT', choices: ['auto', 'dev', 'staging', 'prod'], description: 'Deployment environment (auto will determine based on branch)')
+        choice(name: 'DEPLOYMENT_TYPE', choices: ['canary', 'standard', 'rollback'], description: 'Deployment type')
+        string(name: 'CANARY_WEIGHT', defaultValue: '20', description: 'Percentage of traffic to route to canary (1-99)')
+        string(name: 'ROLLBACK_VERSION', defaultValue: '', description: 'Version to rollback to (required for rollback)')
+        string(name: 'REDIS_MAX_ATTEMPTS', defaultValue: '50', description: 'Maximum attempts to wait for Redis readiness')
+        string(name: 'REDIS_SLEEP_DURATION', defaultValue: '5', description: 'Sleep duration between Redis readiness checks (in seconds)')
+    }
+    
+    triggers {
+        // Poll SCM every minute for changes
+        pollSCM('* * * * *')
+        
+        // GitHub webhook trigger (requires GitHub plugin)
+        githubPush()
     }
     
     stages {
+
+        stage('Initialize Environment Variables') {
+            steps {
+                script {
+                    // Determine if this is a triggered build from GitHub
+                    def isTriggerFromGitHub = false
+                    try {
+                        def causes = currentBuild.getBuildCauses()
+                        causes.each { cause ->
+                            echo "Build cause: ${cause}"
+                            if (cause.toString().contains('github') || 
+                                cause.toString().contains('GitHub') ||
+                                cause.toString().contains('GitHubPushCause') || 
+                                cause.toString().contains('SCMTriggerCause') || 
+                                cause.toString().contains('Remote')) {
+                                isTriggerFromGitHub = true
+                                echo "Detected automatic GitHub trigger"
+                            }
+                        }
+                        
+                        // Additional detection methods
+                        if (!isTriggerFromGitHub && (env.CHANGE_ID != null || env.GIT_COMMIT != null)) {
+                            echo "Detected GitHub trigger via metadata"
+                            isTriggerFromGitHub = true
+                        }
+                    } catch (Exception e) {
+                        echo "Error determining build cause: ${e.getMessage()}"
+                    }
+                    
+                    // Different initialization for automatic vs manual builds
+                    if (isTriggerFromGitHub) {
+                        // For automatic GitHub push builds, use default values that are safe
+                        echo "Automatic build detected - setting default safe values"
+                        
+                        // Get branch name with improved detection
+                        def branch = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceAll('origin/', '')
+                        
+                        if (branch == null || branch.trim() == '') {
+                            try {
+                                def gitOutput = sh(script: "git branch --contains HEAD | grep '*' | cut -d' ' -f2", returnStdout: true).trim()
+                                branch = gitOutput ?: 'unknown'
+                            } catch (Exception e) {
+                                branch = 'unknown'
+                            }
+                        }
+                        
+                        echo "Detected branch: ${branch}"
+                        
+                        // Safer defaults based on the branch
+                        if (branch == 'main' || branch == 'master') {
+                            env.DEPLOY_ENV = 'prod'
+                            env.DEPLOY_TYPE = 'canary'  // Always use canary for automatic main branch builds
+                            env.CANARY_WEIGHT = '20'    // Default to 20% traffic
+                        } else if (branch == 'staging') {
+                            env.DEPLOY_ENV = 'staging'
+                            env.DEPLOY_TYPE = 'standard'
+                        } else {
+                            env.DEPLOY_ENV = 'dev'
+                            env.DEPLOY_TYPE = 'standard'
+                        }
+                    } else {
+                        // For manual builds, use the parameters from the UI
+                        env.DEPLOY_ENV = params.ENVIRONMENT
+                        env.DEPLOY_TYPE = params.DEPLOYMENT_TYPE
+                    }
+                    
+                    echo "Initial environment setting: ${env.DEPLOY_ENV}"
+                    echo "Initial deployment type: ${env.DEPLOY_TYPE}"
+                }
+            }
+        }
+
+        stage('Finalize Environment Settings') {
+            steps {
+                script {
+                    // Print diagnostic information about environment variables
+                    echo "Branch name: ${env.BRANCH_NAME}"
+                    echo "GIT_BRANCH: ${env.GIT_BRANCH}"
+                    
+                    // Get branch name with improved detection
+                    def branch = env.BRANCH_NAME ?: env.GIT_BRANCH?.replaceAll('origin/', '')
+                    
+                    if (branch == null || branch.trim() == '') {
+                        echo "WARNING: Branch name is empty or null, trying alternate methods"
+                        try {
+                            def gitOutput = sh(script: "git branch --contains HEAD | grep '*' | cut -d' ' -f2", returnStdout: true).trim()
+                            branch = gitOutput ?: 'unknown'
+                            echo "Determined branch using git command: ${branch}"
+                        } catch (Exception e) {
+                            echo "Failed to get branch name: ${e.getMessage()}"
+                            branch = 'dev' // Default to dev if we can't determine
+                            echo "Defaulting to branch: ${branch}"
+                        }
+                    }
+                    
+                    echo "Resolved branch name: ${branch}"
+                    
+                    // Set environment based on branch if auto-detect is enabled and not already set
+                    if (env.DEPLOY_ENV == 'auto') {
+                        // More robust branch determination logic
+                        if (branch == 'main' || branch == 'master') {
+                            env.DEPLOY_ENV = 'prod'
+                        } else if (branch == 'staging') {
+                            env.DEPLOY_ENV = 'staging'
+                        } else {
+                            env.DEPLOY_ENV = 'dev'
+                        }
+                    }
+                    
+                    echo "Deploying to environment: ${env.DEPLOY_ENV}"
+                    
+                    // Final deployment type validation - ensure main branch always uses canary deployment
+                    if ((branch == 'main' || branch == 'master') && env.DEPLOY_ENV == 'prod') {
+                        // Force canary deployment for production main branch regardless of what's been set
+                        // This is a safety mechanism
+                        env.DEPLOY_TYPE = 'canary'
+                        echo "IMPORTANT: Production main branch deployment detected - OVERRIDING to canary deployment for safety"
+                    }
+                    
+                    echo "Final deployment type: ${env.DEPLOY_TYPE}"
+                    
+                    // Store a separate value for the credential ID determination
+                    if (env.DEPLOY_ENV == 'auto') {
+                        env.CRED_ENV = 'prod'  // Use prod-env-file when auto is detected
+                        echo "Using credential ID: ${env.CRED_ENV}-env-file for auto environment"
+                    } else {
+                        env.CRED_ENV = env.DEPLOY_ENV
+                        echo "Using credential ID: ${env.CRED_ENV}-env-file"
+                    }
+                }
+            }
+        }
+
+        stage('Validate Parameters') {
+            steps {
+                script {
+                    if (env.DEPLOY_TYPE == 'rollback' && params.ROLLBACK_VERSION == '') {
+                        error "Rollback version is required for rollback deployment type"
+                    }
+                    
+                    if (env.DEPLOY_TYPE == 'canary') {
+                        def canaryWeight = params.CANARY_WEIGHT.toInteger()
+                        if (canaryWeight < 1 || canaryWeight > 99) {
+                            error "Canary weight must be between 1 and 99"
+                        }
+                    }
+                }
+            }
+        }
+        
         stage('Checkout') {
             steps {
                 checkout scm
@@ -38,348 +192,226 @@ pipeline {
         
         stage('Build Docker Image') {
             when {
-                anyOf {
-                    branch 'main',
-                    branch 'dev'
-                }
+                expression { env.DEPLOY_TYPE != 'rollback' }
             }
             steps {
                 script {
                     try {
-                        // Login to Docker Hub with credential helper
-                        sh '''
-                            echo "${DOCKER_CREDENTIALS_PSW}" | docker login -u "${DOCKER_CREDENTIALS_USR}" --password-stdin ${DOCKER_REGISTRY}
-                        '''
+                        sh "docker build -t ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG} ."
                         
-                        // Set up Buildx
-                        sh '''
-                            docker buildx create --use --name pipeline-builder || true
-                            docker buildx inspect --bootstrap pipeline-builder
-                        '''
-                        
-                        // Determine tag based on branch
-                        def imageTag = ""
-                        def additionalTags = ""
-                        
-                        if (env.BRANCH_NAME == 'dev') {
-                            imageTag = "staging-${BUILD_VERSION}"
-                            additionalTags = "--tag ${DOCKER_REGISTRY}/${REPO_NAME}:staging-latest"
-                        } else if (env.BRANCH_NAME == 'main') {
-                            imageTag = "live-${BUILD_VERSION}"
-                            additionalTags = "--tag ${DOCKER_REGISTRY}/${REPO_NAME}:live-latest"
+                        if (env.DEPLOY_TYPE == 'canary') {
+                            sh "docker tag ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG} ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
                         }
-                        
-                        // Build and push image
+                    } catch (Exception e) {
+                        echo "Error building Docker image: ${e.getMessage()}"
+                        echo "Checking if Docker is installed..."
+                        sh "which docker || echo 'Docker not found'"
+                        sh "id | grep docker || echo 'User not in docker group'"
+                        throw e
+                    }
+                }
+            }
+        }
+        
+        stage('Push Docker Image') {
+            when {
+                expression { env.DEPLOY_TYPE != 'rollback' }
+            }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'docker-registry-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASSWORD')]) {
+                    sh "echo ${DOCKER_PASSWORD} | docker login -u ${DOCKER_USER} --password-stdin"
+                    sh "docker push ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
+                    
+                    script {
+                        if (env.DEPLOY_TYPE == 'canary') {
+                            sh "docker push ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Update Config Files') {
+            steps {
+                script {
+                    def envFile = '.env'
+                    def composeFile = 'docker-compose.yml'
+                    
+                    // Create environment-specific .env file
+                    if (env.DEPLOY_ENV == 'dev') {
+                        sh "sed -i 's/IS_DEV=false/IS_DEV=true/g' ${envFile}"
+                        sh "sed -i 's/REDIS_SENTINELS_PROD/REDIS_SENTINELS_DEV/g' ${composeFile}"
+                        sh "sed -i 's/REDIS_HOST_PROD/REDIS_HOST_DEV/g' ${composeFile}"
+                    }
+                    
+                    // Update canary deployment settings if needed
+                    if (env.DEPLOY_TYPE == 'canary') {
+                        sh "sed -i 's/CANARY_WEIGHT=.*/CANARY_WEIGHT=${params.CANARY_WEIGHT}/g' ${envFile}"
+                    }
+                    
+                    // Update Traefik configuration to use IP instead of domain name
+                    if (fileExists('traefik/traefik.yml')) {
+                        sh "sed -i 's/your-domain.com/${DROPLET_IP}/g' traefik/traefik.yml"
+                    }
+                    
+                    // Update docker-compose.canary.yml to use IP instead of domain name
+                    if (fileExists('docker-compose.canary.yml')) {
+                        sh "sed -i 's/your-domain.com/${DROPLET_IP}/g' docker-compose.canary.yml"
+                    }
+                }
+            }
+        }
+        
+        stage('Prepare Deployment Target') {
+            steps {
+                script {
+                    // Print diagnostic information about credentials
+                    echo "Current environment: ${env.DEPLOY_ENV}"
+                    echo "Deployment type: ${env.DEPLOY_TYPE}"
+                    echo "Credential environment: ${env.CRED_ENV}"
+                    echo "Credentials ID to look for: ${env.CRED_ENV}-env-file"
+                }
+                
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
+                    file(credentialsId: "${env.CRED_ENV}-env-file", variable: 'ENV_FILE')
+                ]) {
+                    script {
+                        // Create deployment directory structure
                         sh """
-                            docker buildx build \\
-                                --push \\
-                                --tag ${DOCKER_REGISTRY}/${REPO_NAME}:${imageTag} \\
-                                ${additionalTags} \\
-                                --cache-from type=registry,ref=${DOCKER_REGISTRY}/${REPO_NAME}:buildcache \\
-                                --cache-to type=registry,ref=${DOCKER_REGISTRY}/${REPO_NAME}:buildcache,mode=max \\
-                                --build-arg NODE_ENV=${NODE_ENV} \\
-                                --build-arg BUILD_VERSION=${BUILD_VERSION} \\
-                                --label org.opencontainers.image.created=\$(date -u +'%Y-%m-%dT%H:%M:%SZ') \\
-                                --label org.opencontainers.image.revision=${env.GIT_COMMIT} \\
-                                --label org.opencontainers.image.version=${BUILD_VERSION} \\
-                                .
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}"
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/traefik"
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/scripts"
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/backup"
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/config/rclone"
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/grafana/dashboards"
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "mkdir -p ${DEPLOYMENT_DIR}/grafana/datasources"
                         """
-                    } catch (Exception e) {
-                        currentBuild.result = 'FAILURE'
-                        error "Failed to build Docker image: ${e.message}"
-                    }
-                }
-            }
-        }
-        
-        stage('Deploy to Staging') {
-            when {
-                branch 'dev'
-            }
-            steps {
-                script {
-                    try {
-                        // Generate docker-compose file
-                        def stagingComposeFile = """
-version: '3.8'
-services:
-  app:
-    image: ${DOCKER_REGISTRY}/${REPO_NAME}:staging-${BUILD_VERSION}
-    ports:
-      - "${APP_PORT}:${APP_PORT}"
-    environment:
-      - NODE_ENV=${NODE_ENV}
-      - APP_PORT=${APP_PORT}
-    restart: always
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${APP_PORT}/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-"""
-                        writeFile file: 'staging-compose.yml', text: stagingComposeFile
                         
-                        // Deploy to staging server
-                        sshagent([SSH_CREDENTIALS]) {
+                        // Copy the environment file with robust error handling
+                        try {
+                            // Check if ENV_FILE exists
+                            sh "ls -la \"${ENV_FILE}\" || echo 'WARNING: ENV_FILE not found!'"
+                            
+                            // Create a default .env file if the credential doesn't exist
                             sh """
-                                # Copy files to staging server
-                                scp -o StrictHostKeyChecking=no -r staging-compose.yml ${SSH_CREDENTIALS_USR}@${env.STAGING_HOST}:/home/${SSH_CREDENTIALS_USR}/
-                                
-                                # Execute deployment script
-                                ssh -o StrictHostKeyChecking=no ${SSH_CREDENTIALS_USR}@${env.STAGING_HOST} << EOF
-#!/bin/bash
-set -e
-
-cd /home/${SSH_CREDENTIALS_USR}
-                                
-# Install Docker if not present
-if ! command -v docker &> /dev/null; then
-    sudo apt-get update
-    sudo apt-get install -y docker.io docker-compose
-    sudo systemctl start docker
-    sudo systemctl enable docker
-    sudo usermod -aG docker \$USER
-fi
-                                
-# Login to Docker Hub
-echo "${DOCKER_CREDENTIALS_PSW}" | docker login -u "${DOCKER_CREDENTIALS_USR}" --password-stdin ${DOCKER_REGISTRY}
-                                
-# Pull the latest image
-docker pull ${DOCKER_REGISTRY}/${REPO_NAME}:staging-${BUILD_VERSION}
-                                
-# Stop and remove existing containers with graceful timeout
-timeout ${DEPLOYMENT_TIMEOUT} docker-compose -f staging-compose.yml down || true
-                                
-# Start new containers
-docker-compose -f staging-compose.yml up -d
-                                
-# Health check with retries
-for i in \$(seq 1 ${HEALTH_CHECK_RETRIES}); do
-    echo "Health check attempt \$i of ${HEALTH_CHECK_RETRIES}..."
-    if curl --silent --fail http://localhost:${APP_PORT}/health; then
-        echo "Health check passed!"
-        exit 0
-    fi
-    echo "Health check failed, retrying in ${HEALTH_CHECK_DELAY} seconds..."
-    sleep ${HEALTH_CHECK_DELAY}
-done
-                                
-echo "Health check failed after ${HEALTH_CHECK_RETRIES} attempts"
-exit 1
-EOF
+                                if [ ! -s "${ENV_FILE}" ]; then
+                                    echo "Creating default .env file since '${env.CRED_ENV}-env-file' credential is missing"
+                                    echo "DEPLOY_ENV=${env.DEPLOY_ENV}" > default.env
+                                    echo "APP_VERSION=${env.APP_VERSION}" >> default.env
+                                    echo "DROPLET_IP=${DROPLET_IP}" >> default.env
+                                    scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no default.env ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env
+                                else
+                                    scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no "${ENV_FILE}" ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env
+                                fi
+                            """
+                        } catch (Exception e) {
+                            echo "Error handling env file: ${e.getMessage()}"
+                            sh """
+                                echo "Using .env file from repository instead"
+                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no .env ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/.env
                             """
                         }
-                    } catch (Exception e) {
-                        currentBuild.result = 'FAILURE'
-                        error "Failed to deploy to staging: ${e.message}"
+                        
+                        // Add DROPLET_IP to env file
+                        sh """
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "grep -q 'DROPLET_IP=' ${DEPLOYMENT_DIR}/.env || echo 'DROPLET_IP=${DROPLET_IP}' >> ${DEPLOYMENT_DIR}/.env"
+                        """
+                        
+                        // Copy configuration files from repository
+                        sh """
+                            # Copy docker-compose files
+                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no docker-compose*.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/
+
+                            # Copy db dump
+                            scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no backup/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/backup/ || true
+                            
+                            # Copy Traefik configuration
+                            if [ -d "traefik" ]; then
+                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no traefik/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/traefik/
+                            fi
+                            
+                            # Copy scripts
+                            if [ -d "scripts" ]; then
+                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no scripts/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/scripts/
+                                ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} "chmod +x ${DEPLOYMENT_DIR}/scripts/*.sh"
+                            fi
+                            
+                            # Copy Prometheus configuration if it exists
+                            if [ -f "prometheus.yml" ]; then
+                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no prometheus.yml ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/
+                            fi
+                            
+                            # Copy Grafana configuration if it exists
+                            if [ -d "grafana" ]; then
+                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no grafana/datasources/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/grafana/datasources/ || true
+                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no grafana/dashboards/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/grafana/dashboards/ || true
+                            fi
+                            
+                            # Copy rclone configuration if it exists
+                            if [ -d "config/rclone" ]; then
+                                scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no config/rclone/* ${SSH_USER}@${DROPLET_IP}:${DEPLOYMENT_DIR}/config/rclone/
+                            fi
+                        """
+                        
+                        // Create docker networks with safer approach
+                        sh """
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} 'docker network ls | grep redis-network || docker network create redis-network'
+                            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${DROPLET_IP} 'docker network ls | grep monitoring-network || docker network create monitoring-network'
+                        """
                     }
                 }
             }
         }
         
-        stage('Deploy Canary to Live') {
-            when {
-                branch 'main'
-            }
+        stage('Deploy Application') {
             steps {
+                echo "Deploying ${env.DEPLOY_TYPE} deployment"
                 script {
-                    try {
-                        // Generate production docker-compose file with canary setup
-                        def productionComposeFile = """
-version: '3.8'
-services:
-  app-stable:
-    image: ${DOCKER_REGISTRY}/${REPO_NAME}:live-latest
-    ports:
-      - "3001:${APP_PORT}"
-    environment:
-      - NODE_ENV=${NODE_ENV}
-      - APP_PORT=${APP_PORT}
-      - DEPLOYMENT_TYPE=stable
-    restart: always
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${APP_PORT}/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-                            
-  app-canary:
-    image: ${DOCKER_REGISTRY}/${REPO_NAME}:live-${BUILD_VERSION}
-    ports:
-      - "3002:${APP_PORT}"
-    environment:
-      - NODE_ENV=${NODE_ENV}
-      - APP_PORT=${APP_PORT}
-      - DEPLOYMENT_TYPE=canary
-    restart: always
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${APP_PORT}/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-"""
-                        writeFile file: 'production-compose.yml', text: productionComposeFile
-                        
-                        // Generate Nginx configuration
-                        def nginxConfig = """
-upstream nextjs_stable {
-    server 127.0.0.1:3001;
-}
-                        
-upstream nextjs_canary {
-    server 127.0.0.1:3002;
-}
-                        
-# Split traffic - 20% to canary
-split_clients "\${remote_addr}\${http_user_agent}\${time_local}" \$upstream {
-    20%   nextjs_canary;
-    *     nextjs_stable;
-}
-                        
-server {
-    listen 80;
-    server_name _;
-                        
-    # Add version header for debugging
-    add_header X-Version \$upstream;
-    add_header X-Deployment-Id "${BUILD_VERSION}";
-                            
-    # Security headers
-    add_header X-Content-Type-Options nosniff;
-    add_header X-Frame-Options SAMEORIGIN;
-    add_header X-XSS-Protection "1; mode=block";
-                            
-    location / {
-        proxy_pass http://\$upstream;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        
-        # WebSocket support
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-                                
-        # Timeouts
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
-    }
-                            
-    # Health check endpoint
-    location /health {
-        proxy_pass http://\$upstream;
-        access_log off;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-    }
-}
-"""
-                        writeFile file: 'nginx-config.conf', text: nginxConfig
-                        
-                        // Deploy to live server
-                        sshagent([SSH_CREDENTIALS]) {
-                            sh """
-                                # Copy files to live server
-                                scp -o StrictHostKeyChecking=no -r production-compose.yml nginx-config.conf ${SSH_CREDENTIALS_USR}@${env.LIVE_HOST}:/home/${SSH_CREDENTIALS_USR}/
-                                
-                                # Execute deployment script
-                                ssh -o StrictHostKeyChecking=no ${SSH_CREDENTIALS_USR}@${env.LIVE_HOST} << EOF
-#!/bin/bash
-set -e
-
-cd /home/${SSH_CREDENTIALS_USR}
-                                
-# Install Docker if not present
-if ! command -v docker &> /dev/null; then
-    sudo apt-get update
-    sudo apt-get install -y docker.io docker-compose nginx
-    sudo systemctl start docker
-    sudo systemctl enable docker
-    sudo usermod -aG docker \$USER
-fi
-                                
-# Login to Docker Hub
-echo "${DOCKER_CREDENTIALS_PSW}" | docker login -u "${DOCKER_CREDENTIALS_USR}" --password-stdin ${DOCKER_REGISTRY}
-                                
-# Pull the latest images
-docker pull ${DOCKER_REGISTRY}/${REPO_NAME}:live-latest
-docker pull ${DOCKER_REGISTRY}/${REPO_NAME}:live-${BUILD_VERSION}
-                                
-# Deploy using docker-compose
-docker-compose -f production-compose.yml up -d
-                                
-# Configure Nginx for canary deployment
-sudo mkdir -p /etc/nginx/conf.d
-sudo cp nginx-config.conf /etc/nginx/conf.d/nextjs-app.conf
-                                
-# Test Nginx configuration
-sudo nginx -t
-
-# Restart Nginx
-sudo systemctl restart nginx
-                                
-# Verify both services are running
-if ! curl --silent --fail http://localhost:3001/health; then
-    echo "Stable service is not healthy!"
-    exit 1
-fi
-                                
-if ! curl --silent --fail http://localhost:3002/health; then
-    echo "Canary service is not healthy!"
-    exit 1
-fi
-                                
-echo "Canary deployment completed successfully. 20% of traffic routed to new version."
-EOF
-                            """
-                        }
-                    } catch (Exception e) {
-                        currentBuild.result = 'FAILURE'
-                        error "Failed to deploy canary to live: ${e.message}"
+                    if (env.DEPLOY_TYPE == 'rollback') {
+                        deployRollback()
+                    } else if (env.DEPLOY_TYPE == 'canary') {
+                        deployCanary()
+                    } else {
+                        deployStandard()
                     }
                 }
             }
         }
         
-        stage('Canary Health Check') {
-            when {
-                branch 'main'
-            }
+        stage('Health Check') {
             steps {
                 script {
-                    try {
-                        // Monitor canary for a period before promoting
-                        echo "Monitoring canary deployment for 5 minutes..."
-                        
-                        // Check canary health every minute for 5 minutes
-                        for (int i = 0; i < 5; i++) {
-                            sleep time: 1, unit: 'MINUTES'
-                            
-                            sshagent([SSH_CREDENTIALS]) {
-                                def healthStatus = sh(
-                                    script: """
-                                        ssh -o StrictHostKeyChecking=no ${SSH_CREDENTIALS_USR}@${env.LIVE_HOST} 'curl --silent --fail http://localhost:3002/health || echo "FAILED"'
-                                    """,
-                                    returnStdout: true
-                                ).trim()
-                                
-                                if (healthStatus == "FAILED") {
-                                    error "Canary health check failed! Deployment may need to be rolled back."
-                                }
-                                
-                                echo "Canary health check passed (${i+1}/5)"
+                    def healthCheckPort = 3000
+                    def healthCheckPath = "/api/health"
+                    def healthCheckUrl = "http://${DROPLET_IP}:${healthCheckPort}${healthCheckPath}"
+                    
+                    echo "Checking health at: ${healthCheckUrl}"
+                    
+                    def healthCheckAttempts = 0
+                    def maxAttempts = 10
+                    def healthCheckSuccess = false
+                    
+                    while (!healthCheckSuccess && healthCheckAttempts < maxAttempts) {
+                        try {
+                            def response = sh(script: "curl -s -o /dev/null -w '%{http_code}' ${healthCheckUrl}", returnStdout: true).trim()
+                            if (response == "200") {
+                                echo "Health check succeeded"
+                                healthCheckSuccess = true
+                            } else {
+                                echo "Health check failed with response: ${response}, retrying..."
+                                healthCheckAttempts++
+                                sleep 15 // Wait 15 seconds before next attempt
                             }
+                        } catch (Exception e) {
+                            echo "Health check failed with exception: ${e.getMessage()}, retrying..."
+                            healthCheckAttempts++
+                            sleep 15
                         }
-                        
-                        echo "Canary deployment stable for 5 minutes. Ready for promotion."
-                    } catch (Exception e) {
-                        currentBuild.result = 'FAILURE'
-                        error "Canary health checks failed: ${e.message}"
+                    }
+                    
+                    if (!healthCheckSuccess) {
+                        error "Health check failed after ${maxAttempts} attempts"
                     }
                 }
             }
@@ -387,320 +419,353 @@ EOF
         
         stage('Promote Canary') {
             when {
-                branch 'main'
-            }
-            input {
-                message "Promote canary to stable?"
-                ok "Promote"
-                parameters {
-                    string(name: 'PROMOTION_REASON', defaultValue: '', description: 'Reason for promotion')
-                    booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip additional tests before promotion')
+                expression { 
+                    echo "Checking if we should promote canary (DEPLOY_TYPE=${env.DEPLOY_TYPE})"
+                    return env.DEPLOY_TYPE == 'canary'
                 }
             }
             steps {
                 script {
+                    // For automatic builds, we can optionally set a timeout and then auto-promote
+                    // if no issues are detected during the canary phase
+                    def isTriggerFromGitHub = false
+                    echo "Checking if build was triggered from GitHub..."
                     try {
-                        // Run additional tests if not skipped
-                        if (!params.SKIP_TESTS) {
-                            echo "Running pre-promotion tests..."
-                            // Add your test steps here
+                        def causes = currentBuild.getBuildCauses()
+                        causes.each { cause ->
+                            echo "Promote stage - Build cause: ${cause}"
+                            if (cause.toString().contains('github') || 
+                                cause.toString().contains('GitHub') ||
+                                cause.toString().contains('GitHubPushCause') || 
+                                cause.toString().contains('SCMTriggerCause') || 
+                                cause.toString().contains('Remote')) {
+                                isTriggerFromGitHub = true
+                                echo "Detected GitHub trigger in promote stage"
+                            }
                         }
                         
-                        // Execute promotion script on live server
-                        sshagent([SSH_CREDENTIALS]) {
-                            sh """
-                                ssh -o StrictHostKeyChecking=no ${SSH_CREDENTIALS_USR}@${env.LIVE_HOST} << EOF
-#!/bin/bash
-set -e
-
-cd /home/${SSH_CREDENTIALS_USR}
-                                
-# Create backup of current stable
-TIMESTAMP=\$(date +%Y%m%d%H%M%S)
-docker tag ${DOCKER_REGISTRY}/${REPO_NAME}:live-latest ${DOCKER_REGISTRY}/${REPO_NAME}:live-backup-\$TIMESTAMP
-docker push ${DOCKER_REGISTRY}/${REPO_NAME}:live-backup-\$TIMESTAMP
-                                
-# Promote canary to stable
-docker tag ${DOCKER_REGISTRY}/${REPO_NAME}:live-${BUILD_VERSION} ${DOCKER_REGISTRY}/${REPO_NAME}:live-latest
-docker push ${DOCKER_REGISTRY}/${REPO_NAME}:live-latest
-                                
-# Update Nginx config to direct all traffic to stable
-cat <<EOT | sudo tee /etc/nginx/conf.d/nextjs-app.conf
-upstream nextjs_app {
-    server 127.0.0.1:3001;
-}
-                        
-server {
-    listen 80;
-    server_name _;
-                        
-    # Add version header for debugging
-    add_header X-Version "stable";
-    add_header X-Deployment-Id "${BUILD_VERSION}";
-                            
-    # Security headers
-    add_header X-Content-Type-Options nosniff;
-    add_header X-Frame-Options SAMEORIGIN;
-    add_header X-XSS-Protection "1; mode=block";
-                            
-    location / {
-        proxy_pass http://nextjs_app;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-                                
-        # WebSocket support
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-                                
-        # Timeouts
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
-    }
-                            
-    # Health check endpoint
-    location /health {
-        proxy_pass http://nextjs_app;
-        access_log off;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-    }
-}
-EOT
-                                
-# Test Nginx configuration
-sudo nginx -t
-
-# Restart Nginx
-sudo systemctl restart nginx
-                                
-# Update docker-compose file to run only the stable version
-cat <<EOT > production-compose.yml
-version: '3.8'
-services:
-  app-stable:
-    image: ${DOCKER_REGISTRY}/${REPO_NAME}:live-latest
-    ports:
-      - "3001:${APP_PORT}"
-    environment:
-      - NODE_ENV=${NODE_ENV}
-      - APP_PORT=${APP_PORT}
-      - DEPLOYMENT_TYPE=stable
-    restart: always
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${APP_PORT}/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-EOT
-                                
-# Restart with new configuration
-docker-compose -f production-compose.yml up -d
-                                
-# Clean up canary container
-docker-compose -f production-compose.yml stop app-canary || true
-docker-compose -f production-compose.yml rm -f app-canary || true
-                                
-echo "Canary promoted to stable. Backup image: ${DOCKER_REGISTRY}/${REPO_NAME}:live-backup-\$TIMESTAMP"
-EOF
-                            """
+                        // Also check for branch and git commit presence as trigger indicators
+                        if (!isTriggerFromGitHub && (env.GIT_COMMIT != null || env.BRANCH_NAME != null)) {
+                            echo "Assuming GitHub trigger based on Git metadata being present"
+                            isTriggerFromGitHub = true
                         }
-                        
-                        // Record promotion details
-                        def promotionLog = """
-Promotion Details:
------------------
-Build: ${env.BUILD_NUMBER}
-Version: ${BUILD_VERSION}
-Promoted by: ${env.USER ?: 'SYSTEM'}
-Reason: ${params.PROMOTION_REASON ?: 'No reason provided'}
-Timestamp: ${new Date().format("yyyy-MM-dd HH:mm:ss 'UTC'", TimeZone.getTimeZone('UTC'))}
-Git Commit: ${env.GIT_COMMIT}
-Branch: ${env.BRANCH_NAME}
-                        """
-                        
-                        writeFile file: 'promotion.log', text: promotionLog
-                        archiveArtifacts artifacts: 'promotion.log', onlyIfSuccessful: true
                     } catch (Exception e) {
-                        currentBuild.result = 'FAILURE'
-                        error "Failed to promote canary: ${e.message}"
+                        echo "Error determining build cause: ${e.getMessage()}"
+                    }
+                    
+                    def canaryWeight = env.CANARY_WEIGHT ?: params.CANARY_WEIGHT ?: "20"
+                    echo "Current canary weight: ${canaryWeight}%"
+                    
+                    if (isTriggerFromGitHub) {
+                        echo "Automated deployment from GitHub push. Monitoring canary for issues..."
+                        
+                        // Sleep for a monitoring period for the canary
+                        def monitoringMinutes = 1
+                        echo "Monitoring canary deployment for ${monitoringMinutes} minutes..."
+                        sleep(time: monitoringMinutes, unit: 'MINUTES')
+                        
+                        // Check for any errors in logs or monitoring
+                        echo "Checking canary health..."
+                        def healthCheckPort = 3000
+                        def healthCheckPath = "/api/health"
+                        def healthCheckUrl = "http://${DROPLET_IP}:${healthCheckPort}${healthCheckPath}"
+                        
+                        try {
+                            def response = sh(script: "curl -s -o /dev/null -w '%{http_code}' ${healthCheckUrl}", returnStdout: true).trim()
+                            def errorCheck = sh(script: "curl -s ${healthCheckUrl} | grep -c 'unhealthy' || true", returnStdout: true).trim()
+                            
+                            if (response == "200" && errorCheck == "0") {
+                                echo "No issues detected in canary. Auto-promoting..."
+                                promoteCanary()
+                            } else {
+                                error "Issues detected in canary deployment (response: ${response}, error check: ${errorCheck}). Rolling back."
+                            }
+                        } catch (Exception e) {
+                            error "Error checking canary health: ${e.getMessage()}. Rolling back."
+                        }
+                    } else {
+                        // For manual builds, require human approval
+                        timeout(time: DEPLOY_TIMEOUT, unit: 'SECONDS') {
+                            input message: "Canary deployment is serving ${canaryWeight}% of traffic. Promote to 100%?", ok: 'Promote'
+                        }
+                        
+                        promoteCanary()
                     }
                 }
             }
         }
         
-        stage('Rollback') {
-            when {
-                expression { return currentBuild.result == 'FAILURE' && env.BRANCH_NAME == 'main' }
-            }
+        stage('Cleanup') {
             steps {
                 script {
-                    try {
-                        // Execute rollback script on live server
-                        sshagent([SSH_CREDENTIALS]) {
-                            sh """
-                                ssh -o StrictHostKeyChecking=no ${SSH_CREDENTIALS_USR}@${env.LIVE_HOST} << EOF
-#!/bin/bash
-set -e
-
-cd /home/${SSH_CREDENTIALS_USR}
-                                
-# Find the most recent backup
-BACKUP_TAG=\$(docker images --format '{{.Repository}}:{{.Tag}}' ${DOCKER_REGISTRY}/${REPO_NAME} | grep 'live-backup' | sort -r | head -n 1)
-                                
-if [ -z "\$BACKUP_TAG" ]; then
-    echo "No backup image found for rollback!"
-    exit 1
-fi
-                                
-echo "Rolling back to: \$BACKUP_TAG"
-                                
-# Restore from backup
-docker tag \$BACKUP_TAG ${DOCKER_REGISTRY}/${REPO_NAME}:live-latest
-docker push ${DOCKER_REGISTRY}/${REPO_NAME}:live-latest
-                                
-# Update docker-compose file to use the rollback image
-cat <<EOT > rollback-compose.yml
-version: '3.8'
-services:
-  app-stable:
-    image: ${DOCKER_REGISTRY}/${REPO_NAME}:live-latest
-    ports:
-      - "3001:${APP_PORT}"
-    environment:
-      - NODE_ENV=${NODE_ENV}
-      - APP_PORT=${APP_PORT}
-      - DEPLOYMENT_TYPE=stable-rollback
-    restart: always
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${APP_PORT}/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-EOT
-                                
-# Deploy the rollback
-docker-compose -f rollback-compose.yml up -d
-                                
-# Update Nginx configuration
-cat <<EOT | sudo tee /etc/nginx/conf.d/nextjs-app.conf
-upstream nextjs_app {
-    server 127.0.0.1:3001;
-}
-                        
-server {
-    listen 80;
-    server_name _;
-                        
-    # Add version header
-    add_header X-Version "stable-rollback";
-                            
-    # Security headers
-    add_header X-Content-Type-Options nosniff;
-    add_header X-Frame-Options SAMEORIGIN;
-    add_header X-XSS-Protection "1; mode=block";
-                            
-    location / {
-        proxy_pass http://nextjs_app;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-                                
-        # WebSocket support
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-                                
-        # Timeouts
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
-    }
-}
-EOT
-                                
-# Test and restart Nginx
-sudo nginx -t
-sudo systemctl restart nginx
-                                
-# Clean up canary container
-docker-compose stop app-canary || true
-docker-compose rm -f app-canary || true
-                                
-echo "Rollback to \$BACKUP_TAG completed successfully."
-EOF
-                            """
-                        }
-                        
-                        // Record rollback details
-                        def rollbackLog = """
-Rollback Details:
-----------------
-Build: ${env.BUILD_NUMBER}
-Triggered by: ${env.USER ?: 'SYSTEM'}
-Reason: Pipeline failure
-Timestamp: ${new Date().format("yyyy-MM-dd HH:mm:ss 'UTC'", TimeZone.getTimeZone('UTC'))}
-Git Commit: ${env.GIT_COMMIT}
-Branch: ${env.BRANCH_NAME}
-                        """
-                        
-                        writeFile file: 'rollback.log', text: rollbackLog
-                        archiveArtifacts artifacts: 'rollback.log', onlyIfSuccessful: true
-                    } catch (Exception e) {
-                        echo "Error during rollback: ${e.message}"
+                    if (env.DEPLOY_TYPE == 'canary') {
+                        sh "docker rmi ${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG} || true"
                     }
+                    
+                    // Clean up old images to save disk space - keep the last 5 builds
+                    sh """
+                        docker images ${DOCKER_REGISTRY}/${APP_IMAGE_NAME} --format '{{.Repository}}:{{.Tag}}' | 
+                        sort -r | 
+                        awk 'NR>5' | 
+                        xargs -r docker rmi || true
+                    """
                 }
+            }
+        }
+        
+        stage('Notify Success') {
+            steps {
+                echo "Successfully deployed to ${env.DEPLOY_ENV} environment using ${env.DEPLOY_TYPE} deployment strategy."
+                
+                // Add notification integrations here if needed
+                // For example, Slack, Email, MS Teams notifications
             }
         }
     }
     
     post {
-        always {
-            // Clean up Docker credentials
-            sh 'docker logout ${DOCKER_REGISTRY} || true'
-            
-            // Clean up workspace
-            cleanWs(
-                cleanWhenAborted: true,
-                cleanWhenFailure: true,
-                cleanWhenNotBuilt: true,
-                cleanWhenSuccess: true,
-                deleteDirs: true
-            )
-        }
-        
-        success {
-            echo 'Pipeline completed successfully'
-            
-            // Send success notification
-            emailext (
-                subject: "SUCCESS: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
-                body: """
-SUCCESSFUL: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'
-Check console output at ${env.BUILD_URL}
-                """,
-                recipientProviders: [[$class: 'DevelopersRecipientProvider']]
-            )
-        }
-        
         failure {
-            echo 'Pipeline failed'
-            
-            // Send failure notification
-            emailext (
-                subject: "FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'",
-                body: """
-FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]'
-Check console output at ${env.BUILD_URL}
-                """,
-                recipientProviders: [[$class: 'DevelopersRecipientProvider']]
-            )
+            script {
+                if (env.DEPLOY_TYPE == 'canary') {
+                    echo "Canary deployment failed, rolling back"
+                    rollbackCanary()
+                }
+                
+                // Add failure notifications here
+                echo "Deployment to ${env.DEPLOY_ENV} environment failed!"
+            }
         }
+        success {
+            echo "Deployment successful!"
+        }
+    }
+}
+
+// Helper functions for deployment strategies
+def deployStandard() {
+    withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+        def deploymentHost = env.DROPLET_IP
+        def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
+        
+        // Create deployment environment file with necessary variables
+        sh """
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
+                echo 'APP_IMAGE=${appImage}';
+                echo 'DROPLET_IP=${deploymentHost}';
+            } > .env.deployment"
+        """
+        
+        // Deploy the full application stack with production profile
+        sh """
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
+                export APP_IMAGE='${appImage}' && \
+                export DROPLET_IP='${deploymentHost}' && \
+                docker-compose pull && \
+                docker-compose --profile production up -d"
+        """
+    }
+}
+
+def promoteCanary() {
+    withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+        def deploymentHost = env.DROPLET_IP
+        def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
+        def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
+        
+        // Merge environment variables properly
+        sh """
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
+                # Combine existing .env with deployment overrides
+                cat .env .env.deployment > .env.combined
+                echo 'APP_IMAGE=${canaryImage}' >> .env.combined
+                echo 'DROPLET_IP=${deploymentHost}' >> .env.combined
+                echo 'APP_PORT=3000' >> .env.combined
+                mv .env.combined .env
+            }"
+            
+            # Update main app with canary image using proper env file
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export \$(grep -v '^#' .env | xargs) && \\
+                docker-compose pull app && \\
+                docker-compose --profile production up -d app"
+                
+            # Now explicitly set CANARY_IMAGE before trying to stop and remove it
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export CANARY_IMAGE='${canaryImage}' && \\
+                export CANARY_WEIGHT='${params.CANARY_WEIGHT}' && \\
+                export STABLE_WEIGHT='${100 - params.CANARY_WEIGHT.toInteger()}' && \\
+                export APP_IMAGE='${appImage}' && \\
+                export DROPLET_IP='${deploymentHost}' && \\
+                export APP_PORT='3000' && \\
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary || true && \\
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true"
+                
+            # Verify traefik is still running, restart if needed
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                if ! docker ps | grep -q traefik; then \\
+                    echo 'Restarting Traefik service' && \\
+                    export APP_IMAGE='${canaryImage}' && \\
+                    export DROPLET_IP='${deploymentHost}' && \\
+                    export APP_PORT='3000' && \\
+                    docker-compose -f docker-compose.yml up -d traefik; \\
+                fi"
+        """
+    }
+}
+
+def rollbackCanary() {
+    withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+        def deploymentHost = env.DROPLET_IP
+        def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
+        def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
+        
+        // Stop and remove the canary service, keeping the original app running
+        sh """
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
+                echo 'APP_IMAGE=${appImage}';
+                echo 'DROPLET_IP=${deploymentHost}';
+                echo 'APP_PORT=3000';
+            } > .env.deployment"
+            
+            # Set all required environment variables before stopping canary
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export CANARY_IMAGE='${canaryImage}' && \\
+                export CANARY_WEIGHT='${params.CANARY_WEIGHT}' && \\
+                export STABLE_WEIGHT='${100 - params.CANARY_WEIGHT.toInteger()}' && \\
+                export APP_IMAGE='${appImage}' && \\
+                export DROPLET_IP='${deploymentHost}' && \\
+                export APP_PORT='3000' && \\
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml stop canary || true && \\
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml rm -f canary || true"
+            
+            # Ensure the main app is still running with the stable image
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export APP_IMAGE='${appImage}' && \\
+                export DROPLET_IP='${deploymentHost}' && \\
+                export APP_PORT='3000' && \\
+                docker-compose --profile production up -d app"
+                
+            # Make sure traefik is running
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export APP_IMAGE='${appImage}' && \\
+                export DROPLET_IP='${deploymentHost}' && \\
+                export APP_PORT='3000' && \\
+                docker-compose -f docker-compose.yml up -d traefik || echo 'Traefik restart skipped'"
+                
+            echo "Successfully rolled back from canary deployment"
+        """
+    }
+}
+
+def deployCanary() {
+    withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+        def deploymentHost = env.DROPLET_IP
+        def canaryImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${CANARY_TAG}"
+        def canaryWeight = params.CANARY_WEIGHT
+        def stableWeight = 100 - canaryWeight.toInteger()
+        def appImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${PROD_TAG}"
+        
+        // Set up environment for canary deployment
+        sh """
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
+                echo 'CANARY_IMAGE=${canaryImage}';
+                echo 'CANARY_WEIGHT=${canaryWeight}';
+                echo 'STABLE_WEIGHT=${stableWeight}';
+                echo 'APP_IMAGE=${appImage}';
+                echo 'DROPLET_IP=${deploymentHost}';
+                echo 'APP_PORT=3000';
+            } > .env.deployment"
+            
+            # First deploy the main infrastructure (Redis, monitoring, etc.)
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export APP_IMAGE='${appImage}' && \\
+                export DROPLET_IP='${deploymentHost}' && \\
+                export APP_PORT=3000 && \\
+                docker-compose pull && \\
+                docker-compose up -d redis-master redis-slave-1 redis-slave-2 redis-slave-3 redis-slave-4 \\
+                sentinel-1 sentinel-2 sentinel-3 redis-backup \\
+                prometheus grafana cadvisor \\
+                redis-exporter-master redis-exporter-slave1 redis-exporter-slave2 redis-exporter-slave3 redis-exporter-slave4"
+                
+            # Wait for Redis infrastructure to be ready with improved error handling
+            echo "Waiting for Redis infrastructure to be ready..."
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                attempt=0; \\
+                max_attempts=${params.REDIS_MAX_ATTEMPTS ?: 50}; \\
+                sleep_duration=${params.REDIS_SLEEP_DURATION ?: 5}; \\
+                echo 'Checking Redis readiness with max_attempts='\$max_attempts', sleep_duration='\$sleep_duration; \\
+                until [ \$attempt -ge \$max_attempts ]; do \\
+                    attempt=\$((attempt+1)); \\
+                    echo 'Waiting for Redis to be ready... ('\$attempt'/'\$max_attempts')'; \\
+                    if docker ps | grep -q redis-master && \\
+                       docker exec -i \$(docker ps -q -f name=redis-master) redis-cli PING 2>/dev/null | grep -q 'PONG'; then \\
+                        echo 'Redis is now ready!'; \\
+                        break; \\
+                    fi; \\
+                    if [ \$attempt -ge \$max_attempts ]; then \\
+                        echo 'Redis infrastructure did not become ready in time, but proceeding with deployment anyway'; \\
+                    fi; \\
+                    sleep \$sleep_duration; \\
+                done"
+                
+            # Start traefik first separately with the required ENV variables
+            echo "Starting Traefik first..."
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export CANARY_IMAGE='${canaryImage}' && \\
+                export CANARY_WEIGHT='${canaryWeight}' && \\
+                export STABLE_WEIGHT='${stableWeight}' && \\
+                export APP_IMAGE='${appImage}' && \\
+                export DROPLET_IP='${deploymentHost}' && \\
+                export APP_PORT=3000 && \\
+                docker-compose -f docker-compose.yml up -d traefik"
+
+            # Then deploy the stable app
+            echo "Deploying stable app..."
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export CANARY_IMAGE='${canaryImage}' && \\
+                export CANARY_WEIGHT='${canaryWeight}' && \\
+                export STABLE_WEIGHT='${stableWeight}' && \\
+                export APP_IMAGE='${appImage}' && \\
+                export DROPLET_IP='${deploymentHost}' && \\
+                export APP_PORT=3000 && \\
+                docker-compose -f docker-compose.yml up -d app"
+
+            # Now deploy the canary
+            echo "Deploying canary..."
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                export CANARY_IMAGE='${canaryImage}' && \\
+                export CANARY_WEIGHT='${canaryWeight}' && \\
+                export STABLE_WEIGHT='${stableWeight}' && \\
+                export APP_IMAGE='${appImage}' && \\
+                export DROPLET_IP='${deploymentHost}' && \\
+                export APP_PORT=3000 && \\
+                docker-compose -f docker-compose.yml -f docker-compose.canary.yml up -d canary"
+                
+            # Check Traefik logs to diagnose any routing issues
+            echo "Checking Traefik logs for routing information..."
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \\
+                docker logs \$(docker ps -q -f name=traefik) | tail -50"
+        """
+    }
+}
+
+def deployRollback() {
+    withCredentials([sshUserPrivateKey(credentialsId: 'ssh-deployment-key', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER')]) {
+        def deploymentHost = env.DROPLET_IP
+        def rollbackImage = "${DOCKER_REGISTRY}/${APP_IMAGE_NAME}:${params.ROLLBACK_VERSION}"
+        
+        // Rollback by updating the app to the specified version while keeping the rest of the stack running
+        sh """
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && {
+                echo 'APP_IMAGE=${rollbackImage}';
+                echo 'DROPLET_IP=${deploymentHost}';
+            } > .env.deployment"
+            
+            ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${SSH_USER}@${deploymentHost} "cd ${env.DEPLOYMENT_DIR} && \
+                export APP_IMAGE='${rollbackImage}' && \
+                export DROPLET_IP='${deploymentHost}' && \
+                docker-compose pull app && \
+                docker-compose --profile production up -d app"
+        """
     }
 }

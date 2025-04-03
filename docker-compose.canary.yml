@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  app:
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.services.app.loadbalancer.server.port=3000"
+      - "traefik.http.services.app.loadbalancer.server.scheme=http"
+      - "traefik.docker.network=traefik_default"
+
+  canary:
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.services.canary.loadbalancer.server.port=3000"
+      - "traefik.http.services.canary.loadbalancer.server.scheme=http"
+      - "traefik.docker.network=traefik_default"

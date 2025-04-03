@@ -1,0 +1,42 @@
+http:
+  routers:
+    app-router:
+      rule: "Host(`${DROPLET_IP}`) || PathPrefix(`/`)"
+      service: "app-service"
+      entryPoints:
+        - "web"
+      middlewares:
+        - "app-stripprefix"
+    
+    canary-router:
+      rule: "Host(`${DROPLET_IP}`) || PathPrefix(`/`)"
+      service: "canary-service"
+      entryPoints:
+        - "web"
+      middlewares:
+        - "app-stripprefix"
+
+  services:
+    app-service:
+      weighted:
+        services:
+          - name: "app"
+            weight: 80  # Default weight, will be overridden by Jenkins
+          - name: "canary"
+            weight: 20  # Default weight, will be overridden by Jenkins
+
+    app:
+      loadBalancer:
+        servers:
+          - url: "http://app:3000"
+
+    canary:
+      loadBalancer:
+        servers:
+          - url: "http://canary:3000"
+
+  middlewares:
+    app-stripprefix:
+      stripPrefix:
+        prefixes:
+          - "/"
